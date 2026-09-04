@@ -301,10 +301,16 @@ public class SkinGap {
         Path jsonOut = Path.of(outPath).resolveSibling("skins.json");
         Files.writeString(jsonOut, data.toString());
 
+        // Horodatage "généré le" figé dans le HTML au moment de la génération (contrairement
+        // au reste du dashboard, qui tourne côté navigateur et s'adapte tout seul) : on force
+        // donc explicitement le fuseau français, sans quoi ça affiche l'heure UTC du runner
+        // GitHub Actions, quel que soit le fuseau de la personne qui regarde ensuite.
+        String generatedAt = java.time.ZonedDateTime.now(java.time.ZoneId.of("Europe/Paris"))
+                .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.FRANCE));
         String html = HTML_TEMPLATE
                 .replace("__DATA__", data.toString())
                 .replace("__COUNT__", String.valueOf(results.size()))
-                .replace("__DATE__", new Date().toString());
+                .replace("__DATE__", generatedAt);
 
         Files.writeString(Path.of(outPath), html);
         System.out.println("OK — " + results.size() + " items écrits dans " + outPath);
@@ -675,8 +681,13 @@ function buildLink(it) {
   // Toujours explicite (0 ou 1), jamais omis : certaines armes sont moins chères en
   // StatTrak™ que sans, et Skinport inclut ces annonces par défaut si le paramètre
   // est absent, ce qui fausse le tri par prix.
-  url += "&stattrack=" + (nameLower.includes("stattrak") ? 1 : 0);
+  // Attention : le paramètre Skinport est "stattrak" (sans le c de "stattrack",
+  // erreur qui faisait que ce filtre n'avait jamais aucun effet).
+  url += "&stattrak=" + (nameLower.includes("stattrak") ? 1 : 0);
   url += "&souvenir=" + (nameLower.startsWith("souvenir") ? 1 : 0);
+  // Toujours explicites à 0 aussi : sans quoi Skinport peut inclure des annonces avec
+  // stickers/charms/nametag ou des skins vanilla dans le tri par prix.
+  url += "&stickers=0&charms=0&nametag=0&vanilla=0";
   return url;
 }
 
