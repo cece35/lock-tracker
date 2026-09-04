@@ -7,8 +7,8 @@ on:
 
   # Une fois validé, décommente ces 2 lignes et ajuste l'intervalle cron
   # (calculé ensemble une fois qu'on connaît la durée réelle d'un run) :
-  # schedule:
-  #   - cron: "0 * * * *"   # exemple : toutes les heures, à ajuster
+  schedule:
+    - cron: "*/5 * * * *"   # exemple : toutes les heures, à ajuster
 
 jobs:
   push-skingap:
