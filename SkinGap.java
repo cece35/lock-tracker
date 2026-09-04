@@ -262,6 +262,12 @@ public class SkinGap {
         }
         data.append("]");
 
+        // Fichier séparé, structuré, pour être consommé par d'autres outils (dashboard tradelock)
+        // sans avoir à re-parser le HTML. Mêmes données que celles déjà calculées ci-dessus,
+        // aucun impact sur le calcul ni sur le rapport HTML.
+        Path jsonOut = Path.of(outPath).resolveSibling("skins.json");
+        Files.writeString(jsonOut, data.toString());
+
         String html = HTML_TEMPLATE
                 .replace("__DATA__", data.toString())
                 .replace("__COUNT__", String.valueOf(results.size()))
@@ -294,9 +300,11 @@ public class SkinGap {
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:'IBM Plex Mono', ui-monospace, monospace; font-size:13px; line-height:1.5; }
   .wrap { max-width: 980px; margin: 0 auto; padding: 24px 14px 60px; }
-  header { border-bottom:1px solid var(--border); padding-bottom:14px; margin-bottom:14px; }
+  header { border-bottom:1px solid var(--border); padding-bottom:14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; }
   .wordmark { font-size:16px; } .wordmark span { color:var(--accent); }
   .tagline { color:var(--muted); font-size:12px; margin-top:4px; }
+  .navlink { color:var(--muted); font-size:12px; text-decoration:none; border:1px solid var(--border); padding:5px 10px; border-radius:3px; white-space:nowrap; }
+  .navlink:hover { color:var(--accent); border-color:var(--accent-dim); }
   .notice { background:var(--surface); border:1px solid var(--border); border-left:2px solid var(--accent-dim); padding:10px 12px; margin:14px 0 18px; color:var(--muted); font-size:11.5px; }
   .notice b { color:var(--text); font-weight:400; }
   .controls { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:14px; }
@@ -333,10 +341,16 @@ public class SkinGap {
   .med-val.overridden { color:var(--accent); border-bottom-color: var(--accent); }
   .med-raw { color:var(--muted); font-size:10.5px; margin-left:4px; }
   .median-badge { color:var(--accent); font-size:11px; margin-left:3px; cursor:help; }
+  .alert-badge { color:var(--accent); font-size:11.5px; margin-right:5px; cursor:help; }
+  .drop-badge { color:var(--accent); font-size:11.5px; margin-right:5px; cursor:help; }
+  .detail-link { color:var(--muted); text-decoration:none; font-size:14px; margin-right:6px; }
+  .detail-link:hover { color:var(--accent); }
   .med-input { width:70px; background:var(--surface); border:1px solid var(--accent-dim); color:var(--text); font-family:inherit; font-size:12.5px; padding:3px 5px; border-radius:3px; }
   .reset-med { color:var(--muted); font-size:10px; cursor:pointer; margin-left:4px; }
   .skin-link { color:var(--muted); text-decoration:none; font-size:14px; }
   .skin-link:hover { color:var(--accent); }
+  .reset-btn { background:var(--surface); border:1px solid var(--border); color:var(--muted); font-family:inherit; font-size:11.5px; padding:7px 10px; border-radius:3px; cursor:pointer; white-space:nowrap; }
+  .reset-btn:hover { color:var(--accent); border-color:var(--accent-dim); }
   #more { display:block; margin:18px auto 0; background:var(--surface); border:1px solid var(--border); color:var(--text); font-family:inherit; padding:9px 18px; border-radius:3px; cursor:pointer; }
   footer { margin-top:26px; color:var(--muted); font-size:11px; border-top:1px solid var(--border); padding-top:12px; }
 </style>
@@ -344,8 +358,11 @@ public class SkinGap {
 <body>
 <div class="wrap">
   <header>
-    <div class="wordmark">skin<span>gap</span></div>
-    <div class="tagline">écart prix de vente espéré vs prix minimum (trade-protect inclus) — __COUNT__ items — généré le __DATE__</div>
+    <div>
+      <div class="wordmark">skin<span>gap</span></div>
+      <div class="tagline">écart prix de vente espéré vs prix minimum (trade-protect inclus) — __COUNT__ items — généré le __DATE__</div>
+    </div>
+    <a class="navlink" href="__DASHBOARD_URL__">→ dashboard</a>
   </header>
 
   <div class="notice">
@@ -413,6 +430,20 @@ public class SkinGap {
       </select>
     </div>
     <div class="grp">
+      <label class="lbl" style="display:flex; align-items:center; gap:5px; cursor:pointer;">
+        <input type="checkbox" id="hideAlerted" style="accent-color:var(--accent)">
+        Masquer déjà alertés
+      </label>
+    </div>
+    <div class="grp">
+      <span class="lbl">Nouveau prix bas (24h) :</span>
+      <select id="newLowSel">
+        <option value="all">Tous</option>
+        <option value="only">Seulement</option>
+        <option value="hide">Masquer</option>
+      </select>
+    </div>
+    <div class="grp">
       <span class="lbl">Trier :</span>
       <select id="sortSel">
         <option value="gap_desc">Écart (haut → bas)</option>
@@ -431,6 +462,7 @@ public class SkinGap {
       </select>
     </div>
     <input type="text" id="search" placeholder="Filtrer par nom...">
+    <button type="button" id="resetFilters" class="reset-btn">↺ Réinitialiser les filtres</button>
   </div>
 
   <div class="cat-block">
@@ -467,6 +499,10 @@ public class SkinGap {
 
 <script>
 const DATA = __DATA__;
+const DASHBOARD_URL = "__DASHBOARD_URL__";
+const ALERTS_API = DASHBOARD_URL + "api/alerts";
+const PRICEDROPS_API = DASHBOARD_URL + "api/pricedrops";
+const EVENTS_URL = DASHBOARD_URL + "events";
 const overrides = {}; // n -> valeur manuelle du prix de vente espéré (brut, avant taxe)
 let volPeriod = "7";
 let priceMode = "auto"; // "auto" | "median" | "min"
@@ -477,9 +513,81 @@ let priceMin = 0, priceMax = Infinity;
 let roiMin = -Infinity, roiMax = Infinity;
 let typeFilter = "all";
 let gapMin = -Infinity, gapMax = Infinity;
+let hideAlerted = false;
+let newLowFilter = "all"; // "all" | "only" | "hide" — filtre sur le badge "nouveau prix bas (24h)"
+let alertedSkins = new Set(); // noms (minuscule) déjà présents dans les alertes du dashboard
+let priceDrops = new Map(); // nom (minuscule) -> dropped_at_ms, skins avec un nouveau prix bas actif (24h)
 let selectedCats = null; // Set<string> — rempli au chargement avec toutes les catégories trouvées
 let shown = 50;
 const PAGE = 50;
+
+// Filtres persistés en localStorage (même origine que le dashboard) pour ne pas les
+// perdre en naviguant entre skingap et le dashboard, ou en rafraîchissant la page.
+const FILTERS_KEY = "skingap_filters_v1";
+
+function serializeFilters() {
+  return {
+    volPeriod, priceMode, sortMode, searchTerm, minVol,
+    priceMin: isFinite(priceMin) ? priceMin : null,
+    priceMax: isFinite(priceMax) ? priceMax : null,
+    roiMin: isFinite(roiMin) ? roiMin : null,
+    roiMax: isFinite(roiMax) ? roiMax : null,
+    gapMin: isFinite(gapMin) ? gapMin : null,
+    gapMax: isFinite(gapMax) ? gapMax : null,
+    typeFilter, hideAlerted, newLowFilter,
+    selectedCats: selectedCats ? [...selectedCats] : null
+  };
+}
+
+function saveFilters() {
+  try { localStorage.setItem(FILTERS_KEY, JSON.stringify(serializeFilters())); } catch (e) {}
+}
+
+function loadFilters() {
+  try {
+    const raw = localStorage.getItem(FILTERS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
+function applySavedFilters(f) {
+  if (f.volPeriod !== undefined) volPeriod = f.volPeriod;
+  if (f.priceMode !== undefined) priceMode = f.priceMode;
+  if (f.sortMode !== undefined) sortMode = f.sortMode;
+  if (f.searchTerm !== undefined) searchTerm = f.searchTerm;
+  if (f.minVol !== undefined) minVol = f.minVol;
+  priceMin = (f.priceMin === null || f.priceMin === undefined) ? 0 : f.priceMin;
+  priceMax = (f.priceMax === null || f.priceMax === undefined) ? Infinity : f.priceMax;
+  roiMin = (f.roiMin === null || f.roiMin === undefined) ? -Infinity : f.roiMin;
+  roiMax = (f.roiMax === null || f.roiMax === undefined) ? Infinity : f.roiMax;
+  gapMin = (f.gapMin === null || f.gapMin === undefined) ? -Infinity : f.gapMin;
+  gapMax = (f.gapMax === null || f.gapMax === undefined) ? Infinity : f.gapMax;
+  if (f.typeFilter !== undefined) typeFilter = f.typeFilter;
+  if (f.hideAlerted !== undefined) hideAlerted = f.hideAlerted;
+  if (f.newLowFilter !== undefined) newLowFilter = f.newLowFilter;
+
+  document.querySelectorAll("#volPeriod button").forEach(b => b.classList.toggle("active", b.dataset.p === volPeriod));
+  document.getElementById("sortSel").value = sortMode;
+  document.getElementById("priceModeSel").value = priceMode;
+  document.getElementById("search").value = searchTerm;
+  document.getElementById("minVol").value = minVol || 0;
+  document.getElementById("priceMin").value = f.priceMin ?? "";
+  document.getElementById("priceMax").value = f.priceMax ?? "";
+  document.getElementById("roiMin").value = f.roiMin ?? "";
+  document.getElementById("roiMax").value = f.roiMax ?? "";
+  document.getElementById("gapMin").value = f.gapMin ?? "";
+  document.getElementById("gapMax").value = f.gapMax ?? "";
+  document.getElementById("typeSel").value = typeFilter;
+  document.getElementById("hideAlerted").checked = hideAlerted;
+  document.getElementById("newLowSel").value = newLowFilter;
+}
+
+// Valeurs par défaut, utilisées par le bouton "Réinitialiser les filtres".
+const FILTER_DEFAULTS = {
+  volPeriod: "7", priceMode: "auto", sortMode: "gap_desc", searchTerm: "",
+  minVol: 0, priceMin: 0, priceMax: Infinity, roiMin: -Infinity, roiMax: Infinity,
+  typeFilter: "all", gapMin: -Infinity, gapMax: Infinity, newLowFilter: "all"
+};
 
 function itemType(name) {
   const l = name.toLowerCase();
@@ -531,8 +639,11 @@ function buildLink(it) {
   for (const [label, code] of Object.entries(EXTERIOR_CODE)) {
     if (nameLower.includes(label)) { url += "&exterior=" + code; break; }
   }
-  if (nameLower.includes("stattrak")) url += "&stattrack=1";
-  if (nameLower.startsWith("souvenir")) url += "&souvenir=1";
+  // Toujours explicite (0 ou 1), jamais omis : certaines armes sont moins chères en
+  // StatTrak™ que sans, et Skinport inclut ces annonces par défaut si le paramètre
+  // est absent, ce qui fausse le tri par prix.
+  url += "&stattrack=" + (nameLower.includes("stattrak") ? 1 : 0);
+  url += "&souvenir=" + (nameLower.startsWith("souvenir") ? 1 : 0);
   return url;
 }
 
@@ -568,6 +679,9 @@ function computeRows() {
     if (it.min < priceMin || it.min > priceMax) return false;
     if (typeFilter !== "all" && itemType(it.n) !== typeFilter) return false;
     if (selectedCats && !selectedCats.has(catOf(it))) return false;
+    if (hideAlerted && alertedSkins.has(it.n.toLowerCase())) return false;
+    if (newLowFilter === "only" && !priceDrops.has(it.n.toLowerCase())) return false;
+    if (newLowFilter === "hide" && priceDrops.has(it.n.toLowerCase())) return false;
     return true;
   });
   rows = rows.map(it => {
@@ -617,6 +731,20 @@ function render() {
 
     const tdMed = document.createElement("td");
     tdMed.className = "num";
+    if (alertedSkins.has(r.it.n.toLowerCase())) {
+      const alertBadge = document.createElement("span");
+      alertBadge.className = "alert-badge";
+      alertBadge.textContent = "⏱";
+      alertBadge.title = "Déjà présent dans les alertes du dashboard";
+      tdMed.appendChild(alertBadge);
+    }
+    if (priceDrops.has(r.it.n.toLowerCase())) {
+      const dropBadge = document.createElement("span");
+      dropBadge.className = "drop-badge";
+      dropBadge.textContent = "🔻";
+      dropBadge.title = "Nouveau prix bas (min TP en baisse par rapport au push précédent, dans les 24 dernières heures)";
+      tdMed.appendChild(dropBadge);
+    }
     const span = document.createElement("span");
     span.className = "med-val" + (isOverride ? " overridden" : "");
     span.textContent = r.med.toFixed(2) + " €";
@@ -665,6 +793,10 @@ function render() {
     tr.appendChild(tdRoi);
 
     const tdLink = document.createElement("td");
+    const detailLink = document.createElement("a");
+    detailLink.href = DASHBOARD_URL + "skin?name=" + encodeURIComponent(r.it.n);
+    detailLink.className = "detail-link"; detailLink.textContent = "ⓘ"; detailLink.title = "Voir le détail de ce skin";
+    tdLink.appendChild(detailLink);
     const a2 = document.createElement("a");
     a2.href = link; a2.target = "_blank"; a2.rel = "noopener";
     a2.className = "skin-link"; a2.textContent = "↗";
@@ -698,70 +830,125 @@ document.getElementById("volPeriod").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-p]"); if (!b) return;
   volPeriod = b.dataset.p;
   document.querySelectorAll("#volPeriod button").forEach(x => x.classList.toggle("active", x===b));
-  render();
+  render(); saveFilters();
 });
-document.getElementById("sortSel").addEventListener("change", (e) => { sortMode = e.target.value; shown = PAGE; render(); });
-document.getElementById("priceModeSel").addEventListener("change", (e) => { priceMode = e.target.value; shown = PAGE; render(); });
-document.getElementById("search").addEventListener("input", (e) => { searchTerm = e.target.value.toLowerCase(); shown = PAGE; render(); });
+document.getElementById("sortSel").addEventListener("change", (e) => { sortMode = e.target.value; shown = PAGE; render(); saveFilters(); });
+document.getElementById("priceModeSel").addEventListener("change", (e) => { priceMode = e.target.value; shown = PAGE; render(); saveFilters(); });
+document.getElementById("search").addEventListener("input", (e) => { searchTerm = e.target.value.toLowerCase(); shown = PAGE; render(); saveFilters(); });
 document.getElementById("minVol").addEventListener("input", (e) => {
   const v = parseInt(e.target.value, 10);
   minVol = isNaN(v) ? 0 : v;
-  shown = PAGE; render();
+  shown = PAGE; render(); saveFilters();
 });
 document.getElementById("priceMin").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
   priceMin = isNaN(v) ? 0 : v;
-  shown = PAGE; render();
+  shown = PAGE; render(); saveFilters();
 });
 document.getElementById("priceMax").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
   priceMax = isNaN(v) ? Infinity : v;
-  shown = PAGE; render();
+  shown = PAGE; render(); saveFilters();
 });
 document.getElementById("roiMin").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
   roiMin = isNaN(v) ? -Infinity : v;
-  shown = PAGE; render();
+  shown = PAGE; render(); saveFilters();
 });
 document.getElementById("roiMax").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
   roiMax = isNaN(v) ? Infinity : v;
-  shown = PAGE; render();
+  shown = PAGE; render(); saveFilters();
 });
 document.getElementById("gapMin").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
   gapMin = isNaN(v) ? -Infinity : v;
-  shown = PAGE; render();
+  shown = PAGE; render(); saveFilters();
 });
 document.getElementById("gapMax").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
   gapMax = isNaN(v) ? Infinity : v;
-  shown = PAGE; render();
+  shown = PAGE; render(); saveFilters();
 });
 document.getElementById("typeSel").addEventListener("change", (e) => {
   typeFilter = e.target.value;
-  shown = PAGE; render();
+  shown = PAGE; render(); saveFilters();
+});
+document.getElementById("hideAlerted").addEventListener("change", (e) => {
+  hideAlerted = e.target.checked;
+  shown = PAGE; render(); saveFilters();
+});
+document.getElementById("newLowSel").addEventListener("change", (e) => {
+  newLowFilter = e.target.value;
+  shown = PAGE; render(); saveFilters();
 });
 document.getElementById("more").addEventListener("click", () => { shown += PAGE; render(); });
 
+document.getElementById("resetFilters").addEventListener("click", () => {
+  volPeriod = FILTER_DEFAULTS.volPeriod;
+  priceMode = FILTER_DEFAULTS.priceMode;
+  sortMode = FILTER_DEFAULTS.sortMode;
+  searchTerm = FILTER_DEFAULTS.searchTerm;
+  minVol = FILTER_DEFAULTS.minVol;
+  priceMin = FILTER_DEFAULTS.priceMin;
+  priceMax = FILTER_DEFAULTS.priceMax;
+  roiMin = FILTER_DEFAULTS.roiMin;
+  roiMax = FILTER_DEFAULTS.roiMax;
+  typeFilter = FILTER_DEFAULTS.typeFilter;
+  gapMin = FILTER_DEFAULTS.gapMin;
+  gapMax = FILTER_DEFAULTS.gapMax;
+  hideAlerted = false;
+  newLowFilter = FILTER_DEFAULTS.newLowFilter;
+
+  document.querySelectorAll("#volPeriod button").forEach(b => b.classList.toggle("active", b.dataset.p === volPeriod));
+  document.getElementById("sortSel").value = sortMode;
+  document.getElementById("priceModeSel").value = priceMode;
+  document.getElementById("search").value = "";
+  document.getElementById("minVol").value = 0;
+  document.getElementById("priceMin").value = "";
+  document.getElementById("priceMax").value = "";
+  document.getElementById("roiMin").value = "";
+  document.getElementById("roiMax").value = "";
+  document.getElementById("gapMin").value = "";
+  document.getElementById("gapMax").value = "";
+  document.getElementById("typeSel").value = "all";
+  document.getElementById("hideAlerted").checked = false;
+  document.getElementById("newLowSel").value = "all";
+
+  selectedCats = new Set(DATA.map(catOf));
+  document.querySelectorAll("#catList input").forEach(cb => cb.checked = true);
+  document.querySelectorAll("#catList .cat-item").forEach(el => el.classList.add("checked"));
+
+  shown = PAGE;
+  render();
+  saveFilters();
+});
+
 // Catégories : construites dynamiquement à partir des données reçues (vraiment toutes les
 // catégories présentes — armes, couteaux, gants, stickers, agents, caisses, music kits, etc.),
-// pas une liste codée en dur qui pourrait en oublier.
-function initCategories() {
+// pas une liste codée en dur qui pourrait en oublier. Si des filtres sauvegardés existent,
+// on ne coche que les catégories qu'ils contenaient encore parmi celles disponibles aujourd'hui.
+function initCategories(savedSelectedCats) {
   const cats = [...new Set(DATA.map(catOf))].sort((a, b) => a.localeCompare(b));
-  selectedCats = new Set(cats);
+  if (savedSelectedCats) {
+    const savedSet = new Set(savedSelectedCats);
+    selectedCats = new Set(cats.filter(c => savedSet.has(c)));
+  } else {
+    selectedCats = new Set(cats);
+  }
   const list = document.getElementById("catList");
   list.innerHTML = "";
   for (const cat of cats) {
+    const checked = selectedCats.has(cat);
     const label = document.createElement("label");
-    label.className = "cat-item checked";
+    label.className = "cat-item" + (checked ? " checked" : "");
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.checked = true;
+    cb.checked = checked;
     cb.addEventListener("change", () => {
       if (cb.checked) selectedCats.add(cat); else selectedCats.delete(cat);
       label.classList.toggle("checked", cb.checked);
-      shown = PAGE; render();
+      shown = PAGE; render(); saveFilters();
     });
     label.appendChild(cb);
     label.appendChild(document.createTextNode(cat));
@@ -771,18 +958,71 @@ function initCategories() {
     selectedCats = new Set(cats);
     list.querySelectorAll("input").forEach(cb => cb.checked = true);
     list.querySelectorAll(".cat-item").forEach(el => el.classList.add("checked"));
-    shown = PAGE; render();
+    shown = PAGE; render(); saveFilters();
   });
   document.getElementById("catNone").addEventListener("click", () => {
     selectedCats = new Set();
     list.querySelectorAll("input").forEach(cb => cb.checked = false);
     list.querySelectorAll(".cat-item").forEach(el => el.classList.remove("checked"));
-    shown = PAGE; render();
+    shown = PAGE; render(); saveFilters();
   });
 }
 
-initCategories();
+// Catalogue des alertes déjà créées dans le dashboard (même origine) : sert au badge ⏱
+// et au filtre "Masquer déjà alertés". Échec silencieux si le dashboard n'est pas
+// accessible (ex: test local de skingap.html sans serveur tradelock) — le badge et le
+// filtre restent simplement inactifs dans ce cas.
+async function loadAlertedSkins() {
+  try {
+    const res = await fetch(ALERTS_API);
+    if (!res.ok) return;
+    const list = await res.json();
+    alertedSkins = new Set(list.map(a => a.skin_name.toLowerCase()));
+    render();
+  } catch (e) {
+    console.error("alertes dashboard indisponibles", e);
+  }
+}
+
+// Skins avec un badge "nouveau prix bas" actif (24h) — même origine que le dashboard,
+// échec silencieux si indisponible (le badge/filtre restent simplement inactifs).
+async function loadPriceDrops() {
+  try {
+    const res = await fetch(PRICEDROPS_API);
+    if (!res.ok) return;
+    const list = await res.json();
+    priceDrops = new Map(list.map(d => [d.name.toLowerCase(), d.dropped_at_ms]));
+    render();
+  } catch (e) {
+    console.error("badges prix bas indisponibles", e);
+  }
+}
+
+const savedFilters = loadFilters();
+if (savedFilters) applySavedFilters(savedFilters);
+initCategories(savedFilters ? savedFilters.selectedCats : null);
+loadAlertedSkins();
+loadPriceDrops();
 render();
+
+// Mise à jour en direct via SSE (même origine que le dashboard) : un "alerts" rafraîchit
+// juste le badge ⏱ / le filtre associé ; un "static" veut dire qu'un nouveau skingap.html
+// (et skins.json) a été poussé — comme les données (DATA) sont figées dans le HTML généré
+// au moment du push, la façon la plus sûre de refléter le nouveau contenu est de recharger
+// la page plutôt que de re-fetch skins.json dans l'ancien DATA.
+function connectSSE() {
+  try {
+    const es = new EventSource(EVENTS_URL);
+    es.addEventListener("alerts", () => { loadAlertedSkins(); loadPriceDrops(); });
+    es.addEventListener("static", () => location.reload());
+  } catch (e) {
+    console.error("SSE indisponible", e);
+  }
+}
+// Repli si la connexion SSE échoue ou n'a jamais pu s'établir (proxy, réseau, etc.).
+setInterval(loadAlertedSkins, 5 * 60 * 1000);
+setInterval(loadPriceDrops, 5 * 60 * 1000);
+connectSSE();
 </script>
 </body>
 </html>
