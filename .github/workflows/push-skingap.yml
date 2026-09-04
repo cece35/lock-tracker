@@ -1,0 +1,49 @@
+name: push-skingap
+
+on:
+  # Déclenchement manuel (bouton "Run workflow" dans l'onglet Actions du repo).
+  # Sert à faire le premier test : passe le blocage Cloudflare ? combien de temps ça prend ?
+  workflow_dispatch:
+
+  # Une fois validé, décommente ces 2 lignes et ajuste l'intervalle cron
+  # (calculé ensemble une fois qu'on connaît la durée réelle d'un run) :
+  # schedule:
+  #   - cron: "0 * * * *"   # exemple : toutes les heures, à ajuster
+
+jobs:
+  push-skingap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5   # garde-fou : tue le job s'il traîne (évite de bouffer le quota bêtement)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Génération du rapport SkinGap
+        run: java SkinGap.java skingap.html
+
+      - name: Injection de l'auto-refresh (5 min)
+        run: |
+          sed -i 's#</body>#<script>setTimeout(()=>location.reload(),300000)</script></body>#' skingap.html
+
+      - name: Préparer la clé SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VM_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.VM_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Envoi vers le VM
+        run: |
+          scp -i ~/.ssh/id_ed25519 skingap.html \
+            "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:~/incoming_skingap.html"
+          ssh -i ~/.ssh/id_ed25519 "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" '
+            sudo mv ~/incoming_skingap.html /opt/tradelock/server/static/skingap.html &&
+            sudo chown tradelock:tradelock /opt/tradelock/server/static/skingap.html &&
+            echo "OK — skingap.html mis à jour sur le VM."
+          '
