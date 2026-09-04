@@ -100,7 +100,7 @@ public class SkinGap {
 
     record SalesVolumes(int v24h, int v7j, int v30j, int v90j, double m24h, double m7j, double m30j, double m90j) {}
 
-    record Result(String name, String marketPage, SalesVolumes volumes, double minWithLocked, double askRaw, double medianRaw) {}
+    record Result(String name, String marketPage, SalesVolumes volumes, double minWithLocked, double askRaw, double medianRaw, String image) {}
 
     static String fetchUrl(HttpClient client, String url) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
@@ -121,6 +121,17 @@ public class SkinGap {
         p.waitFor();
         Files.deleteIfExists(tmp);
         return json;
+    }
+
+    // Fetch simple, sans décompression brotli (contrairement à fetchUrl, dédié à l'API
+    // Skinport) — utilisé pour le catalogue d'images externe (raw.githubusercontent.com).
+    static String fetchPlain(HttpClient client, String url) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder().uri(URI.create(url)).GET().build();
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Erreur HTTP " + response.statusCode() + " pour " + url);
+        }
+        return response.body();
     }
 
     static double asDouble(Object o) { return o == null ? 0.0 : (Double) o; }
@@ -185,6 +196,26 @@ public class SkinGap {
         List<Object> itemsAllList = (List<Object>) new JsonParser(jsonItemsAll).parse();
         List<Object> itemsTradableList = (List<Object>) new JsonParser(jsonItemsTradable).parse();
 
+        // Catalogue d'images (projet public ByMykel/CSGO-API, indexé par market_hash_name —
+        // même format de nom que Skinport pour les skins d'armes). Échec non bloquant :
+        // si indisponible, on continue sans image plutôt que de faire échouer tout le run.
+        System.out.println("Récupération du catalogue d'images...");
+        Map<String, String> imageByName = new HashMap<>();
+        try {
+            String jsonImages = fetchPlain(client,
+                    "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/skins_not_grouped.json");
+            List<Object> imagesList = (List<Object>) new JsonParser(jsonImages).parse();
+            for (Object o : imagesList) {
+                Map<String, Object> item = (Map<String, Object>) o;
+                Object mhn = item.get("market_hash_name");
+                Object img = item.get("image");
+                if (mhn != null && img != null) imageByName.put((String) mhn, (String) img);
+            }
+            System.out.println("Catalogue d'images chargé (" + imageByName.size() + " entrées).");
+        } catch (Exception e) {
+            System.err.println("Catalogue d'images indisponible, on continue sans : " + e.getMessage());
+        }
+
         Map<String, SalesVolumes> volumesByName = new HashMap<>();
         Map<String, String> marketPageByName = new HashMap<>();
         for (Object o : salesList) {
@@ -239,8 +270,9 @@ public class SkinGap {
             // sont envoyées telles quelles, le mode de calcul (auto / médiane / min listé) est
             // choisi côté client et peut être changé sans re-fetch.
             double weighted = weightedMedian(vol);
+            String image = imageByName.getOrDefault(name, "");
 
-            results.add(new Result(name, mp, vol, e.getValue(), askRaw, weighted));
+            results.add(new Result(name, mp, vol, e.getValue(), askRaw, weighted, image));
         }
         results.sort(Comparator.comparing(Result::name));
 
@@ -251,6 +283,7 @@ public class SkinGap {
             first = false;
             data.append("{\"n\":\"").append(jsonEscape(r.name())).append("\"")
                 .append(",\"p\":\"").append(jsonEscape(r.marketPage())).append("\"")
+                .append(",\"i\":\"").append(jsonEscape(r.image())).append("\"")
                 .append(",\"min\":").append(r.minWithLocked())
                 .append(",\"ask\":").append(r.askRaw())
                 .append(",\"wm\":").append(r.medianRaw())
