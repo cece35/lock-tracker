@@ -25,6 +25,9 @@ jobs:
       - name: Génération du rapport SkinGap
         run: java SkinGap.java skingap.html
 
+      - name: Injection de l'URL du dashboard
+        run: sed -i "s|__DASHBOARD_URL__|${{ secrets.DASHBOARD_URL }}|g" skingap.html
+
       - name: Injection de l'auto-refresh (5 min)
         run: |
           sed -i 's#</body>#<script>setTimeout(()=>location.reload(),300000)</script></body>#' skingap.html
