@@ -2,13 +2,11 @@ name: push-skingap
 
 on:
   # Déclenchement manuel (bouton "Run workflow" dans l'onglet Actions du repo).
-  # Sert à faire le premier test : passe le blocage Cloudflare ? combien de temps ça prend ?
   workflow_dispatch:
 
-  # Une fois validé, décommente ces 2 lignes et ajuste l'intervalle cron
-  # (calculé ensemble une fois qu'on connaît la durée réelle d'un run) :
+  # Toutes les 5 min, décalé de 2 min pour éviter les créneaux ronds surchargés
   schedule:
-    - cron: "*/5 * * * *"   # exemple : toutes les heures, à ajuster
+    - cron: "2-59/5 * * * *"
 
 jobs:
   push-skingap:
