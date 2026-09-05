@@ -172,152 +172,72 @@ public class SkinGap {
     static double clamp(double v, double lo, double hi) { return Math.max(lo, Math.min(hi, v)); }
 
     // ===================================================================
-    // Modèle de prix de revente (4 vitesses) — voir le cahier des charges complet dans
-    // prompt_prix_revente_skinport_corrige.md à la racine du dépôt. Résumé des choix :
+    // Modèle de prix de revente (4 vitesses) — voir formule_prix_4_vitesses.md à la racine
+    // du dépôt (remplace l'ancien modèle multi-facteurs, jugé imprévisible en pratique).
+    // Résumé :
     //
-    // 1) fair_value historique : les fenêtres de vente (24h/7j/30j/90j) se chevauchent
-    //    (§5) -> reconstruction d'intervalles NON chevauchants par différence de volume
-    //    (§5 "Possibilité 2"), puis combinaison en échelle logarithmique pondérée par
-    //    (volume du bucket × poids de récence), pour éviter qu'une fenêtre extrême
-    //    domine (moyenne géométrique demandée en fin de §5).
-    // 2) Ce fair_value historique est ensuite mélangé au marché tradable actuel
-    //    (Tmedian/Tmean), qui est la priorité n°1 du §3, avec un poids qui dépend du
-    //    volume de chaque source (plus de ventes récentes ou plus d'annonces tradables
-    //    tradable => plus de poids).
-    // 3) Tmin est protégé (§6, §13.4) : si très inférieur à la médiane, on ne le jette
-    //    pas (il peut être une vraie opportunité) mais on ne l'utilise pas tel quel pour
-    //    VERY_FAST, on le remonte partiellement.
-    // 4) Tendance (§7) : seulement une petite correction prudente de la fair value
-    //    actuelle, jamais une projection dans le temps, et pondérée par le volume
-    //    disponible (peu de ventes => peu de confiance dans la tendance).
-    // 5) liquidity_score et confidence_score (§9, §13) pilotent l'écart entre les 4 prix
-    //    (§11 : pas un simple pourcentage fixe, la structure du marché de CHAQUE skin
-    //    doit influencer l'écart).
+    // L = Tmin (marché tradable, prix le plus bas actuellement disponible)
+    // M = Tmedian (médiane du marché tradable actuel)
+    // H = moyenne des médianes de vente 24h/7j/30j/90j pondérée par leur volume (fenêtres
+    //     à volume=0 ou médiane absente simplement ignorées — voir weightedMedian())
+    //
+    // BASE = min(H, L) si un historique existe, sinon L : une anomalie historique haute ne
+    //        peut jamais faire monter le prix au-dessus du marché actuellement disponible.
+    // SPREAD = max(0, M - L) : l'espace entre le prix le plus bas et la médiane du marché.
+    //
+    // VERY_FAST = min(M, BASE)
+    // FAST      = min(M, BASE + 0.15 * SPREAD)
+    // NORMAL    = min(M, BASE + 0.35 * SPREAD)
+    // PATIENT   = min(M, BASE + 0.60 * SPREAD)
+    //
+    // Les coefficients 0.15/0.35/0.60 sont centralisés ici (PRICE_SPEED_COEFFS), pas
+    // dupliqués en dur ailleurs dans le code.
     // ===================================================================
+    static final double[] PRICE_SPEED_COEFFS = {0.00, 0.15, 0.35, 0.60}; // VERY_FAST, FAST, NORMAL, PATIENT
+
     static PriceModelResult computePriceModel(SalesVolumes v, MarketStats t, MarketStats g) {
-        // --- 1) Fair value historique : buckets non chevauchants + pondération de récence ---
-        // Milieux (en jours) de chaque tranche one-shot [0,1[, [1,7[, [7,30[, [30,90[.
-        double[] bucketVol = {
-                v.v24h(),
-                Math.max(0, v.v7j() - v.v24h()),
-                Math.max(0, v.v30j() - v.v7j()),
-                Math.max(0, v.v90j() - v.v30j())
-        };
-        double[] bucketMed = {v.m24h(), v.m7j(), v.m30j(), v.m90j()};
-        double[] bucketMidDays = {0.5, 4.0, 18.5, 60.0};
-        double halfLifeDays = 15.0; // une vente d'il y a 15j pèse moitié moins qu'une vente d'aujourd'hui
+        double L = t.min();
+        double M = t.median();
+        double Q = t.quantity();
 
-        double logSum = 0, weightSum = 0, totalSalesVol = 0;
-        double[] logMedForDisagreement = new double[4];
-        double[] weightForDisagreement = new double[4];
-        for (int i = 0; i < 4; i++) {
-            // Cas 1 du §13 : volume=0 => la médiane de cette fenêtre n'est pas une info exploitable.
-            if (bucketVol[i] <= 0 || bucketMed[i] <= 0) continue;
-            double recency = Math.pow(0.5, bucketMidDays[i] / halfLifeDays);
-            double w = bucketVol[i] * recency;
-            logSum += w * Math.log(bucketMed[i]);
-            weightSum += w;
-            totalSalesVol += bucketVol[i];
-            logMedForDisagreement[i] = Math.log(bucketMed[i]);
-            weightForDisagreement[i] = w;
-        }
-        boolean hasHistory = weightSum > 0;
-        double fvHist = hasHistory ? Math.exp(logSum / weightSum) : -1;
+        // Si L est absent, aucun prix espéré ne doit être calculé (aucune annonce tradable
+        // sur laquelle baser le modèle).
+        if (L <= 0) return PriceModelResult.EMPTY;
 
-        // Dispersion entre les fenêtres elles-mêmes (indépendamment du marché tradable) :
-        // sert uniquement à baisser la confiance si les fenêtres se contredisent fortement.
-        double histDisagreement = 0;
-        if (hasHistory) {
-            double variance = 0;
-            for (int i = 0; i < 4; i++) {
-                if (weightForDisagreement[i] <= 0) continue;
-                double d = logMedForDisagreement[i] - (logSum / weightSum);
-                variance += weightForDisagreement[i] * d * d;
-            }
-            histDisagreement = Math.sqrt(variance / weightSum);
-        }
+        // H : moyenne pondérée par volume des médianes 24h/7j/30j/90j (weightedMedian ignore
+        // déjà nativement les fenêtres à volume nul). -1 si aucune fenêtre exploitable.
+        double H = weightedMedian(v);
+        boolean hasHistory = H > 0;
 
-        // --- 2) Marché tradable actuel (priorité n°1 du §3) ---
-        boolean hasMarket = t.median() > 0 || t.mean() > 0;
-        double tMarket = t.median() > 0
-                ? 0.85 * t.median() + 0.15 * (t.mean() > 0 ? t.mean() : t.median())
-                : (t.mean() > 0 ? t.mean() : -1);
+        double BASE = hasHistory ? Math.min(H, L) : L;
 
-        // --- Combinaison fair value historique + marché tradable ---
-        double fairValue;
-        double marketDisagreement = 0;
-        if (hasHistory && hasMarket) {
-            double wHist = Math.log(1 + totalSalesVol);
-            double wMarket = Math.log(1 + t.quantity());
-            fairValue = (wHist + wMarket) > 0
-                    ? Math.exp((wHist * Math.log(fvHist) + wMarket * Math.log(tMarket)) / (wHist + wMarket))
-                    : (fvHist + tMarket) / 2;
-            marketDisagreement = Math.abs(Math.log(tMarket) - Math.log(fvHist));
-        } else if (hasHistory) {
-            fairValue = fvHist;
-        } else if (hasMarket) {
-            fairValue = tMarket;
-        } else if (g.median() > 0) {
-            // Cas 3 du §13 (marché tradable vide) : on bascule sur le marché global (incluant
-            // le trade-lock), avec une confiance qui sera très faible (calculée plus bas).
-            fairValue = g.median();
-        } else if (g.min() > 0) {
-            fairValue = g.min();
+        double veryFast, fast, normal, patient;
+        if (M > 0) {
+            double SPREAD = Math.max(0, M - L);
+            veryFast = Math.min(M, BASE + PRICE_SPEED_COEFFS[0] * SPREAD);
+            fast     = Math.min(M, BASE + PRICE_SPEED_COEFFS[1] * SPREAD);
+            normal   = Math.min(M, BASE + PRICE_SPEED_COEFFS[2] * SPREAD);
+            patient  = Math.min(M, BASE + PRICE_SPEED_COEFFS[3] * SPREAD);
         } else {
-            return PriceModelResult.EMPTY;
+            // Pas de médiane tradable exploitable : pas de spread possible, les 4 prix
+            // retombent sur BASE (qui vaut L si en plus aucun historique n'est disponible).
+            veryFast = fast = normal = patient = BASE;
         }
 
-        // --- 3) Tendance récente (§7) : correction prudente uniquement, jamais une projection ---
-        double trendShort = (v.m24h() > 0 && v.m7j() > 0) ? Math.log(v.m24h() / v.m7j()) : 0;
-        double trendMedium = (v.m7j() > 0 && v.m30j() > 0) ? Math.log(v.m7j() / v.m30j()) : 0;
-        double wShort = clamp(v.v24h() / 8.0, 0, 1);   // peu de ventes 24h => peu de confiance
-        double wMedium = clamp(v.v7j() / 15.0, 0, 1);
-        double trendScore = (wShort + wMedium) > 0
-                ? clamp((trendShort * wShort + trendMedium * wMedium) / (wShort + wMedium), -0.2, 0.2)
-                : 0;
-        // Correction amortie : au plus ±5% de la fair value, jamais une projection à date fixe.
-        double fairValueAdjusted = fairValue * Math.exp(clamp(trendScore * 0.3, -0.05, 0.05));
+        // Le reste (confiance/liquidité/tendance/désaccord) reste purement informatif pour
+        // la page de détail d'un skin — sans effet sur les 4 prix calculés ci-dessus.
+        double totalSalesVol = v.v24h() + v.v7j() + v.v30j() + v.v90j();
+        double confidence = clamp(
+                0.5 * clamp(Math.log(1 + totalSalesVol) / Math.log(1 + 30), 0, 1)
+                        + 0.5 * clamp(Math.log(1 + Q) / Math.log(1 + 30), 0, 1),
+                0, 1);
+        double liquidity = clamp((Math.log(1 + v.v7j()) + Math.log(1 + Q)) / 8.0, 0, 1);
+        double trend = (v.m24h() > 0 && v.m7j() > 0)
+                ? clamp(Math.log(v.m24h() / v.m7j()), -0.5, 0.5) : 0;
+        double disagreement = (hasHistory && M > 0) ? Math.abs(Math.log(M) - Math.log(H)) : 0;
 
-        // --- 4) Protection de Tmin (§6, §13.4) : un listing isolé très anormal ne doit pas,
-        // à lui seul, déterminer les 4 prix, mais une vraie opportunité ne doit pas être
-        // supprimée pour autant -> on la remonte à mi-chemin plutôt que de l'ignorer. ---
-        double referenceMedian = t.median() > 0 ? t.median() : fairValueAdjusted;
-        double safeTMin;
-        if (t.min() > 0) {
-            boolean anomaly = referenceMedian > 0 && (t.min() / referenceMedian) < 0.7;
-            safeTMin = anomaly ? t.min() + 0.5 * (referenceMedian - t.min()) : t.min();
-        } else {
-            // Aucune annonce tradable du tout : pas de Tmin observable, on part d'une décote
-            // prudente de la fair value plutôt que d'inventer un chiffre de nulle part.
-            safeTMin = fairValueAdjusted * 0.90;
-        }
-
-        // --- 5) Liquidité (§9) : pilote l'écart entre les 4 prix, pas un pourcentage fixe (§11) ---
-        double liquidity = clamp((Math.log(1 + v.v7j()) + Math.log(1 + t.quantity())) / 8.0, 0, 1);
-
-        // --- 6) Confiance globale (§13) ---
-        double confidence = 0;
-        confidence += clamp(Math.log(1 + totalSalesVol) / Math.log(1 + 30), 0, 1) * 0.5;
-        confidence += clamp(Math.log(1 + t.quantity()) / Math.log(1 + 30), 0, 1) * 0.5;
-        if (marketDisagreement > 0.15) confidence *= 0.7;      // §5.15 market_disagreement
-        if (hasHistory && histDisagreement > 0.25) confidence *= 0.85;
-        confidence = clamp(confidence, 0, 1);
-
-        // --- 7) Les quatre prix (§10-11), dérivés du même état de marché, avec des écarts qui
-        // dépendent de la liquidité et de la dispersion réelle de CE skin (jamais un % fixe). ---
-        double tick = 0.01;
-        double veryFast = Math.max(0.01, safeTMin - tick);
-        double kFast = clamp(0.15 + 0.35 * liquidity, 0.15, 0.55);
-        double fast = Math.max(veryFast + tick, safeTMin + kFast * (referenceMedian - safeTMin));
-        double normal = Math.max(fast + tick, 0.6 * fairValueAdjusted + 0.4 * referenceMedian);
-        double dispersionFactor = referenceMedian > 0
-                ? clamp((referenceMedian - safeTMin) / referenceMedian, 0, 0.3)
-                : 0;
-        double premium = 0.03 + 0.12 * (1 - liquidity) + 0.10 * dispersionFactor;
-        double patient = normal * (1 + premium);
-
-        return new PriceModelResult(fairValueAdjusted, confidence, veryFast, fast, normal, patient,
-                liquidity, marketDisagreement, trendScore);
+        return new PriceModelResult(BASE, confidence, veryFast, fast, normal, patient,
+                liquidity, disagreement, trend);
     }
 
     // Doppler : Skinport agrège toutes les phases (1-4, Ruby/Sapphire/Black Pearl, Gamma Doppler...)
