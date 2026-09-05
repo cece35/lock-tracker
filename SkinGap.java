@@ -2,9 +2,11 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.Base64;
 
 public class SkinGap {
 
@@ -140,6 +142,137 @@ public class SkinGap {
         p.waitFor();
         Files.deleteIfExists(tmp);
         return json;
+    }
+
+    // Variante authentifiée de fetchUrl, pour les endpoints /v1/account/* qui exigent
+    // l'en-tête Authorization (Basic base64(clientId:clientSecret) — Skinport n'utilise PAS
+    // un vrai flux OAuth2 avec token, juste du Basic Auth classique sur chaque requête).
+    static String fetchUrlAuth(HttpClient client, String url, String authHeader) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .header("Accept-Encoding", "br")
+                .header("Authorization", authHeader)
+                .GET()
+                .build();
+        HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Erreur HTTP " + response.statusCode() + " pour " + url
+                    + " — vérifie SKINPORT_CLIENT_ID / SKINPORT_CLIENT_SECRET");
+        }
+        Path tmp = Files.createTempFile("skinport-acc", ".br");
+        Files.write(tmp, response.body());
+        ProcessBuilder pb = new ProcessBuilder("brotli", "-d", "-c", tmp.toString());
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+        String json = new String(p.getInputStream().readAllBytes());
+        p.waitFor();
+        Files.deleteIfExists(tmp);
+        return json;
+    }
+
+    // Récupère la totalité des transactions du compte (toutes les pages, 100 par page = le
+    // max autorisé par l'API), triées desc (défaut Skinport = plus récent en premier).
+    @SuppressWarnings("unchecked")
+    static List<Map<String, Object>> fetchAllTransactions(HttpClient client, String authHeader) throws Exception {
+        List<Map<String, Object>> all = new ArrayList<>();
+        int page = 1;
+        while (true) {
+            String url = "https://api.skinport.com/v1/account/transactions?page=" + page
+                    + "&limit=100&order=desc";
+            Map<String, Object> resp = (Map<String, Object>) new JsonParser(fetchUrlAuth(client, url, authHeader)).parse();
+            List<Object> data = (List<Object>) resp.get("data");
+            for (Object o : data) all.add((Map<String, Object>) o);
+            Map<String, Object> pagination = (Map<String, Object>) resp.get("pagination");
+            int pages = asInt(pagination.get("pages"));
+            if (page >= pages || data.isEmpty()) break;
+            page++;
+        }
+        return all;
+    }
+
+    // Stats agrégées par item (market_hash_name) à partir de l'historique de transactions.
+    // "enStock" est une APPROXIMATION (achetés - vendus) : Skinport n'expose aucun endpoint
+    // pour lister les items actuellement possédés/en vente, donc impossible de savoir avec
+    // certitude si un exemplaire précis a été revendu (les asset_id changent après un trade).
+    record ItemAccountStats(String name, int achetes, int vendus, double totalDepense,
+                             double totalGagne, int enStock) {}
+
+    record GlobalAccountStats(double totalDepense, double totalGagne, double totalRetire,
+                               double totalFrais, double benefice, int nbTransactions) {}
+
+    @SuppressWarnings("unchecked")
+    static String buildAccountStatsJson(List<Map<String, Object>> transactions) {
+        Map<String, double[]> perItem = new LinkedHashMap<>(); // name -> [achetes, vendus, depense, gagne]
+        double totalDepense = 0, totalGagne = 0, totalRetire = 0, totalFrais = 0;
+
+        for (Map<String, Object> tx : transactions) {
+            String type = (String) tx.get("type");
+            String subType = (String) tx.get("sub_type");
+            totalFrais += asDouble(tx.get("fee"));
+
+            if ("withdraw".equals(type)) {
+                totalRetire += asDouble(tx.get("amount"));
+                continue;
+            }
+
+            List<Object> items = (List<Object>) tx.get("items");
+            if (items == null) continue;
+
+            boolean isPurchase = "purchase".equals(type);
+            boolean isSale = "credit".equals(type) && "item".equals(subType);
+            if (!isPurchase && !isSale) continue;
+
+            for (Object o : items) {
+                Map<String, Object> item = (Map<String, Object>) o;
+                String name = (String) item.get("market_hash_name");
+                double amount = asDouble(item.get("amount"));
+                double[] agg = perItem.computeIfAbsent(name, k -> new double[4]);
+                if (isPurchase) {
+                    agg[0] += 1;
+                    agg[2] += amount;
+                    totalDepense += amount;
+                } else {
+                    agg[1] += 1;
+                    agg[3] += amount;
+                    totalGagne += amount;
+                }
+            }
+        }
+
+        List<ItemAccountStats> items = new ArrayList<>();
+        for (Map.Entry<String, double[]> e : perItem.entrySet()) {
+            double[] a = e.getValue();
+            items.add(new ItemAccountStats(e.getKey(), (int) a[0], (int) a[1], a[2], a[3],
+                    Math.max(0, (int) a[0] - (int) a[1])));
+        }
+        items.sort(Comparator.comparing(ItemAccountStats::name));
+
+        GlobalAccountStats global = new GlobalAccountStats(totalDepense, totalGagne, totalRetire,
+                totalFrais, totalGagne - totalDepense, transactions.size());
+
+        StringBuilder sb = new StringBuilder("{");
+        sb.append("\"global\":{")
+          .append("\"totalDepense\":").append(global.totalDepense())
+          .append(",\"totalGagne\":").append(global.totalGagne())
+          .append(",\"totalRetire\":").append(global.totalRetire())
+          .append(",\"totalFrais\":").append(global.totalFrais())
+          .append(",\"benefice\":").append(global.benefice())
+          .append(",\"nbTransactions\":").append(global.nbTransactions())
+          .append("},\"items\":[");
+        boolean first = true;
+        for (ItemAccountStats it : items) {
+            if (!first) sb.append(",");
+            first = false;
+            sb.append("{\"n\":\"").append(jsonEscape(it.name())).append("\"")
+              .append(",\"achetes\":").append(it.achetes())
+              .append(",\"vendus\":").append(it.vendus())
+              .append(",\"depense\":").append(it.totalDepense())
+              .append(",\"gagne\":").append(it.totalGagne())
+              .append(",\"enStock\":").append(it.enStock())
+              .append("}");
+        }
+        sb.append("]}");
+        return sb.toString();
     }
 
     // Fetch simple, sans décompression brotli (contrairement à fetchUrl, dédié à l'API
@@ -440,6 +573,24 @@ public class SkinGap {
         Files.writeString(Path.of(outPath), html);
         System.out.println("OK — " + results.size() + " items écrits dans " + outPath);
         System.out.println("Ouvre ce fichier dans un navigateur (ex: termux-open " + outPath + ")");
+
+        // Stats de compte Skinport (achats/ventes/bénéfice) — nécessite SKINPORT_CLIENT_ID et
+        // SKINPORT_CLIENT_SECRET (Repository secrets du repo GitHub Actions). Non bloquant :
+        // si absents (ex. run local sans les secrets), on saute cette partie proprement.
+        String clientId = System.getenv("SKINPORT_CLIENT_ID");
+        String clientSecret = System.getenv("SKINPORT_CLIENT_SECRET");
+        if (clientId != null && !clientId.isBlank() && clientSecret != null && !clientSecret.isBlank()) {
+            System.out.println("Récupération des transactions du compte Skinport...");
+            String authHeader = "Basic " + Base64.getEncoder().encodeToString(
+                    (clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
+            List<Map<String, Object>> transactions = fetchAllTransactions(client, authHeader);
+            String accountJson = buildAccountStatsJson(transactions);
+            Path accountOut = Path.of(outPath).resolveSibling("account-stats.json");
+            Files.writeString(accountOut, accountJson);
+            System.out.println("OK — " + transactions.size() + " transactions écrites dans " + accountOut);
+        } else {
+            System.out.println("SKINPORT_CLIENT_ID / SKINPORT_CLIENT_SECRET absents — stats de compte ignorées.");
+        }
     }
 
     // ---------------------------------------------------------------
