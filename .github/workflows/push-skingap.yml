@@ -23,6 +23,9 @@ jobs:
           java-version: '17'
 
       - name: Génération du rapport SkinGap
+        env:
+          SKINPORT_CLIENT_ID: ${{ secrets.SKINPORT_CLIENT_ID }}
+          SKINPORT_CLIENT_SECRET: ${{ secrets.SKINPORT_CLIENT_SECRET }}
         run: java SkinGap.java skingap.html
 
       - name: Injection de l'URL du dashboard
@@ -41,11 +44,21 @@ jobs:
 
       - name: Envoi vers le VM
         run: |
-          scp -i ~/.ssh/id_ed25519 skingap.html skins.json \
+          # account-stats.json n'existe que si SKINPORT_CLIENT_ID/SECRET sont configurés
+          # (voir SkinGap.java) ; on l'ajoute au scp seulement s'il a été généré, pour ne
+          # pas casser le workflow tant que les secrets ne sont pas encore en place.
+          FILES="skingap.html skins.json"
+          [ -f account-stats.json ] && FILES="$FILES account-stats.json"
+
+          scp -i ~/.ssh/id_ed25519 $FILES \
             "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:~/"
           ssh -i ~/.ssh/id_ed25519 "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" '
             sudo mv ~/skingap.html /opt/tradelock/server/static/skingap.html &&
             sudo mv ~/skins.json /opt/tradelock/server/static/skins.json &&
+            if [ -f ~/account-stats.json ]; then
+              sudo mv ~/account-stats.json /opt/tradelock/server/static/account-stats.json &&
+              sudo chown tradelock:tradelock /opt/tradelock/server/static/account-stats.json
+            fi &&
             sudo chown tradelock:tradelock /opt/tradelock/server/static/skingap.html /opt/tradelock/server/static/skins.json &&
-            echo "OK — skingap.html et skins.json mis à jour sur le VM."
+            echo "OK — skingap.html, skins.json (et account-stats.json si présent) mis à jour sur le VM."
           '
