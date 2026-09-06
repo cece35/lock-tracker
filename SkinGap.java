@@ -537,6 +537,12 @@ public class SkinGap {
                 .append(",\"v7\":").append(r.volumes().v7j())
                 .append(",\"v30\":").append(r.volumes().v30j())
                 .append(",\"v90\":").append(r.volumes().v90j())
+                // Médianes brutes par fenêtre (nécessaires pour le sélecteur de période sur la
+                // page détail du dashboard — distinct de "wm" qui est la médiane pondérée globale).
+                .append(",\"h24\":").append(r.volumes().m24h())
+                .append(",\"h7\":").append(r.volumes().m7j())
+                .append(",\"h30\":").append(r.volumes().m30j())
+                .append(",\"h90\":").append(r.volumes().m90j())
                 // Modèle 4 vitesses (voir prompt_prix_revente_skinport_corrige.md) — tous ces
                 // prix sont BRUTS, avant la taxe Skinport (appliquée à l'affichage par withTax()
                 // côté JS / skinportNet() côté serveur), conformément au §14 du prompt.
@@ -753,6 +759,10 @@ public class SkinGap {
         <option value="auto">Auto (min, sauf si médiane plus basse)</option>
         <option value="median">Médiane des ventes</option>
         <option value="min">Min listé</option>
+        <option value="veryfast">Très rapide</option>
+        <option value="fast">Rapide</option>
+        <option value="normal">Normal</option>
+        <option value="patient">Patient</option>
       </select>
     </div>
     <div class="grp">
@@ -988,6 +998,11 @@ function buildLink(it) {
 // - "median" : toujours la médiane pondérée des ventes ; si aucune vente enregistrée (wm <= 0),
 //              retombe sur le prix minimum demandé.
 // - "min"    : toujours le prix minimum demandé, quelle que soit la médiane.
+// - "veryfast"/"fast"/"normal"/"patient" : un des 4 prix du modèle de vitesse de revente
+//              (voir Formule de calcul des 4 prix espérés Skinport.md / PriceModelResult côté
+//              génération) — déjà calculés dans DATA (pvf/pft/pnm/ppt), simplement pas encore
+//              exposés dans ce sélecteur jusqu'ici. Retombe sur "auto" si le modèle n'a pas pu
+//              être calculé pour cet item (fv/conf <= 0, cf. hasPriceModel() côté serveur).
 // Une valeur éditée manuellement (override) remplace tout le reste.
 // Retourne { raw, usedMedian } pour piloter aussi le badge Ⓜ à l'affichage.
 function rawExpectedOf(it) {
@@ -999,6 +1014,11 @@ function rawExpectedOf(it) {
   if (priceMode === "min") {
     return { raw: it.ask, usedMedian: false };
   }
+  const hasModel = it.fv > 0 && it.conf > 0;
+  if (priceMode === "veryfast") return hasModel ? { raw: it.pvf, usedMedian: false } : { raw: it.ask, usedMedian: false };
+  if (priceMode === "fast") return hasModel ? { raw: it.pft, usedMedian: false } : { raw: it.ask, usedMedian: false };
+  if (priceMode === "normal") return hasModel ? { raw: it.pnm, usedMedian: false } : { raw: it.ask, usedMedian: false };
+  if (priceMode === "patient") return hasModel ? { raw: it.ppt, usedMedian: false } : { raw: it.ask, usedMedian: false };
   // auto
   if (hasWm && it.wm < it.ask) return { raw: it.wm, usedMedian: true };
   return { raw: it.ask, usedMedian: false };
