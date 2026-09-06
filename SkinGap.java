@@ -194,21 +194,24 @@ public class SkinGap {
     // "enStock" est une APPROXIMATION (achetés - vendus) : Skinport n'expose aucun endpoint
     // pour lister les items actuellement possédés/en vente, donc impossible de savoir avec
     // certitude si un exemplaire précis a été revendu (les asset_id changent après un trade).
+    // totalGagne / gagne (par item) sont NETS (après commission Skinport, cf. totalFrais) —
+    // c'est le montant réellement crédité sur le compte, cohérent avec ce qu'affiche Skinport.
     record ItemAccountStats(String name, int achetes, int vendus, double totalDepense,
-                             double totalGagne, int enStock) {}
+                             double totalGagne, int enStock, String image) {}
 
     record GlobalAccountStats(double totalDepense, double totalGagne, double totalRetire,
                                double totalFrais, double benefice, int nbTransactions) {}
 
     @SuppressWarnings("unchecked")
-    static String buildAccountStatsJson(List<Map<String, Object>> transactions) {
-        Map<String, double[]> perItem = new LinkedHashMap<>(); // name -> [achetes, vendus, depense, gagne]
-        double totalDepense = 0, totalGagne = 0, totalRetire = 0, totalFrais = 0;
+    static String buildAccountStatsJson(List<Map<String, Object>> transactions, Map<String, String> imageByName) {
+        Map<String, double[]> perItem = new LinkedHashMap<>(); // name -> [achetes, vendus, depense, gagneNet]
+        double totalDepense = 0, totalGagneNet = 0, totalRetire = 0, totalFrais = 0;
 
         for (Map<String, Object> tx : transactions) {
             String type = (String) tx.get("type");
             String subType = (String) tx.get("sub_type");
-            totalFrais += asDouble(tx.get("fee"));
+            double txFee = asDouble(tx.get("fee"));
+            totalFrais += txFee;
 
             if ("withdraw".equals(type)) {
                 totalRetire += asDouble(tx.get("amount"));
@@ -222,6 +225,17 @@ public class SkinGap {
             boolean isSale = "credit".equals(type) && "item".equals(subType);
             if (!isPurchase && !isSale) continue;
 
+            // Pour une vente, "amount" par item est BRUT (avant commission Skinport) ; la
+            // commission ("fee") est portée au niveau de la transaction, pas de l'item. Quand
+            // une tx groupe plusieurs items, on répartit la commission au prorata du montant
+            // brut de chaque item pour obtenir un "gagné" net cohérent par item ET au global.
+            double txAmountTotal = 0;
+            if (isSale) {
+                for (Object o : items) {
+                    txAmountTotal += asDouble(((Map<String, Object>) o).get("amount"));
+                }
+            }
+
             for (Object o : items) {
                 Map<String, Object> item = (Map<String, Object>) o;
                 String name = (String) item.get("market_hash_name");
@@ -232,9 +246,11 @@ public class SkinGap {
                     agg[2] += amount;
                     totalDepense += amount;
                 } else {
+                    double part = txAmountTotal > 0 ? amount / txAmountTotal : 0;
+                    double net = amount - txFee * part;
                     agg[1] += 1;
-                    agg[3] += amount;
-                    totalGagne += amount;
+                    agg[3] += net;
+                    totalGagneNet += net;
                 }
             }
         }
@@ -243,15 +259,19 @@ public class SkinGap {
         for (Map.Entry<String, double[]> e : perItem.entrySet()) {
             double[] a = e.getValue();
             items.add(new ItemAccountStats(e.getKey(), (int) a[0], (int) a[1], a[2], a[3],
-                    Math.max(0, (int) a[0] - (int) a[1])));
+                    Math.max(0, (int) a[0] - (int) a[1]), imageByName.getOrDefault(e.getKey(), "")));
         }
         items.sort(Comparator.comparing(ItemAccountStats::name));
 
-        GlobalAccountStats global = new GlobalAccountStats(totalDepense, totalGagne, totalRetire,
-                totalFrais, totalGagne - totalDepense, transactions.size());
+        GlobalAccountStats global = new GlobalAccountStats(totalDepense, totalGagneNet, totalRetire,
+                totalFrais, totalGagneNet - totalDepense, transactions.size());
+
+        String generatedAt = java.time.ZonedDateTime.now(java.time.ZoneId.of("Europe/Paris"))
+                .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.FRANCE));
 
         StringBuilder sb = new StringBuilder("{");
-        sb.append("\"global\":{")
+        sb.append("\"generatedAt\":\"").append(generatedAt).append("\"");
+        sb.append(",\"global\":{")
           .append("\"totalDepense\":").append(global.totalDepense())
           .append(",\"totalGagne\":").append(global.totalGagne())
           .append(",\"totalRetire\":").append(global.totalRetire())
@@ -269,6 +289,7 @@ public class SkinGap {
               .append(",\"depense\":").append(it.totalDepense())
               .append(",\"gagne\":").append(it.totalGagne())
               .append(",\"enStock\":").append(it.enStock())
+              .append(",\"img\":\"").append(jsonEscape(it.image())).append("\"")
               .append("}");
         }
         sb.append("]}");
@@ -590,7 +611,7 @@ public class SkinGap {
             String authHeader = "Basic " + Base64.getEncoder().encodeToString(
                     (clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
             List<Map<String, Object>> transactions = fetchAllTransactions(client, authHeader);
-            String accountJson = buildAccountStatsJson(transactions);
+            String accountJson = buildAccountStatsJson(transactions, imageByName);
             Path accountOut = Path.of(outPath).resolveSibling("account-stats.json");
             Files.writeString(accountOut, accountJson);
             System.out.println("OK — " + transactions.size() + " transactions écrites dans " + accountOut);
