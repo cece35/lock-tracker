@@ -713,7 +713,7 @@ public class SkinGap {
   <header>
     <div>
       <div class="wordmark">skin<span>gap</span></div>
-      <div class="tagline">écart prix de vente espéré vs prix minimum (trade-protect inclus) — 10041 items — généré le 05/09/2026 03:06</div>
+      <div class="tagline">écart prix de vente espéré vs prix minimum (trade-protect inclus) — __COUNT__ items — généré le __DATE__</div>
     </div>
     <a class="navlink" href="http://89.168.59.90:8080/7d44209968490653cb6ffcd0d1e101eb/">→ dashboard</a>
   </header>
