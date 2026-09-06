@@ -1044,7 +1044,13 @@ function rawExpectedOf(it) {
     return { raw: it.ask, usedMedian: false };
   }
   const hasModel = it.fv > 0 && it.conf > 0;
-  if (priceMode === "veryfast") return hasModel ? { raw: it.pvf, usedMedian: false } : { raw: it.ask, usedMedian: false };
+  // "Très rapide" : même formule que la page détail du skin — une petite décote sous le prix
+  // le plus bas déjà listé (jamais négative) pour rester la meilleure offre du marché et
+  // partir dans la journée, plutôt que l'ancien calcul basé sur pvf (modèle statistique).
+  if (priceMode === "veryfast") {
+    const undercut = Math.max(0.01, Math.round(it.ask * 0.01 * 100) / 100);
+    return { raw: Math.max(0.01, Math.round((it.ask - undercut) * 100) / 100), usedMedian: false };
+  }
   if (priceMode === "fast") return hasModel ? { raw: it.pft, usedMedian: false } : { raw: it.ask, usedMedian: false };
   if (priceMode === "normal") return hasModel ? { raw: it.pnm, usedMedian: false } : { raw: it.ask, usedMedian: false };
   if (priceMode === "patient") return hasModel ? { raw: it.ppt, usedMedian: false } : { raw: it.ask, usedMedian: false };
@@ -1105,6 +1111,7 @@ function render() {
     const gapClass = r.gap >= 0 ? "pos" : "neg";
     const link = buildLink(r.it);
     tr.dataset.name = r.it.n;
+    if (r.it.n === highlightedName) tr.classList.add("row-highlighted");
 
     const tdName = document.createElement("td");
     tdName.className = "name";
@@ -1208,11 +1215,20 @@ function render() {
 // Surbrillance de la ligne d'un item — au clic dessus (comme le survol) ou à l'ouverture
 // d'un lien vers ?highlight=Nom (ex: depuis une notif). Un clic ailleurs sur la page l'enlève.
 let pendingHighlightName = new URLSearchParams(location.search).get("highlight");
+let highlightedName = null; // conservé entre les render() (tri, filtres, "afficher plus"…) —
+                             // seul un clic ailleurs sur la page (voir plus bas) l'efface.
 
 function highlightRow(tr) {
+  highlightedName = tr.dataset.name;
   const prev = document.querySelector("#rows tr.row-highlighted");
   if (prev && prev !== tr) prev.classList.remove("row-highlighted");
   tr.classList.add("row-highlighted");
+}
+
+function clearHighlight() {
+  highlightedName = null;
+  const prev = document.querySelector("#rows tr.row-highlighted");
+  if (prev) prev.classList.remove("row-highlighted");
 }
 
 function applyPendingHighlight() {
@@ -1232,13 +1248,13 @@ function applyPendingHighlight() {
 document.getElementById("rows").addEventListener("click", (e) => {
   const tr = e.target.closest("tr");
   if (!tr) return;
-  if (e.target.closest("a, span, button")) return; // laisse les liens/boutons de la ligne agir normalement
+  if (e.target.closest(".detail-link")) return; // navigue dans le même onglet, pas la peine de surligner avant de quitter
+  if (e.target.closest(".med-val, .med-input")) return; // l'édition du prix espéré gère déjà son propre focus/scroll
   highlightRow(tr);
 });
 document.addEventListener("click", (e) => {
   if (e.target.closest("#rows tr")) return;
-  const prev = document.querySelector("#rows tr.row-highlighted");
-  if (prev) prev.classList.remove("row-highlighted");
+  clearHighlight();
 });
 
 function startEdit(name, rawMed, cell) {
