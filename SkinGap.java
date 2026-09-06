@@ -673,6 +673,7 @@ public class SkinGap {
   thead th { text-align:left; color:var(--muted); font-weight:400; font-size:11px; border-bottom:1px solid var(--border); padding:6px 8px; }
   tbody td { padding:7px 8px; border-bottom:1px solid var(--border); vertical-align:middle; }
   tbody tr:hover { background: var(--surface); }
+  tbody tr.row-highlighted { background: var(--accent-dim); }
   .name a { color:var(--text); text-decoration:none; }
   .name a:hover { color:var(--accent); }
   .name-cell { display:flex; align-items:center; gap:8px; }
@@ -819,7 +820,8 @@ public class SkinGap {
       </select>
     </div>
     <div class="search-wrap">
-      <input type="text" id="search" placeholder="Filtrer par nom...">
+      <input type="text" id="search" placeholder="Filtrer par nom..." list="itemNamesList" autocomplete="off">
+      <datalist id="itemNamesList"></datalist>
       <span class="search-clear" id="searchClear" title="Effacer le filtre">✕</span>
     </div>
     <button type="button" id="resetFilters" class="reset-btn">↺ Réinitialiser les filtres</button>
@@ -859,6 +861,12 @@ public class SkinGap {
 
 <script>
 const DATA = __DATA__;
+// Capturé pour comparaison au retour d'onglet (voir visibilitychange plus bas) — pas besoin
+// d'attendre que ça réponde pour afficher la page, ça arrive en tâche de fond.
+let PAGE_LAST_MODIFIED = null;
+fetch(location.pathname, { method: "HEAD", cache: "no-store" })
+  .then(r => { PAGE_LAST_MODIFIED = r.headers.get("Last-Modified"); })
+  .catch(() => {});
 const DASHBOARD_URL = "http://89.168.59.90:8080/7d44209968490653cb6ffcd0d1e101eb/";
 const ALERTS_API = DASHBOARD_URL + "api/alerts";
 const PRICEDROPS_API = DASHBOARD_URL + "api/pricedrops";
@@ -1096,6 +1104,7 @@ function render() {
     const isOverride = overrides[r.it.n] !== undefined;
     const gapClass = r.gap >= 0 ? "pos" : "neg";
     const link = buildLink(r.it);
+    tr.dataset.name = r.it.n;
 
     const tdName = document.createElement("td");
     tdName.className = "name";
@@ -1104,7 +1113,7 @@ function render() {
     if (r.it.i) {
       const thumb = document.createElement("img");
       thumb.className = "item-thumb";
-      thumb.src = r.it.i; thumb.alt = ""; thumb.loading = "lazy";
+      thumb.src = r.it.i; thumb.alt = ""; thumb.loading = "lazy"; thumb.decoding = "async";
       nameCell.appendChild(thumb);
     }
     const a = document.createElement("a");
@@ -1191,7 +1200,46 @@ function render() {
     tbody.appendChild(tr);
   }
   document.getElementById("more").style.display = rows.length > shown ? "block" : "none";
+  // Un item demandé via ?highlight=... peut être hors de la page affichée (shown) si la
+  // liste est longue : on affiche plus de lignes jusqu'à le trouver, avant de le surligner.
+  applyPendingHighlight();
 }
+
+// Surbrillance de la ligne d'un item — au clic dessus (comme le survol) ou à l'ouverture
+// d'un lien vers ?highlight=Nom (ex: depuis une notif). Un clic ailleurs sur la page l'enlève.
+let pendingHighlightName = new URLSearchParams(location.search).get("highlight");
+
+function highlightRow(tr) {
+  const prev = document.querySelector("#rows tr.row-highlighted");
+  if (prev && prev !== tr) prev.classList.remove("row-highlighted");
+  tr.classList.add("row-highlighted");
+}
+
+function applyPendingHighlight() {
+  if (!pendingHighlightName) return;
+  const tr = [...document.querySelectorAll("#rows tr")].find(r => r.dataset.name === pendingHighlightName);
+  if (!tr) {
+    // Pas encore affiché : on affiche plus de lignes (comme "Afficher plus") et on réessaie.
+    const rows = computeRows();
+    if (shown < rows.length) { shown += PAGE; render(); }
+    return;
+  }
+  highlightRow(tr);
+  tr.scrollIntoView({ behavior: "smooth", block: "center" });
+  pendingHighlightName = null; // ne réessaie plus après un render ultérieur (filtres, etc.)
+}
+
+document.getElementById("rows").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr");
+  if (!tr) return;
+  if (e.target.closest("a, span, button")) return; // laisse les liens/boutons de la ligne agir normalement
+  highlightRow(tr);
+});
+document.addEventListener("click", (e) => {
+  if (e.target.closest("#rows tr")) return;
+  const prev = document.querySelector("#rows tr.row-highlighted");
+  if (prev) prev.classList.remove("row-highlighted");
+});
 
 function startEdit(name, rawMed, cell) {
   // la valeur éditée est le prix de vente espéré brut (sans taxe) ; la taxe est réappliquée à l'affichage
@@ -1205,6 +1253,9 @@ function startEdit(name, rawMed, cell) {
   function commit() {
     const v = parseFloat(input.value);
     if (!isNaN(v)) overrides[name] = v;
+    // Après édition, le tri peut faire descendre l'item plus bas dans la liste (voire sous
+    // la pagination "Afficher plus") — on le retrouve et on scrolle dessus pour ne pas le perdre.
+    pendingHighlightName = name;
     render();
   }
   input.onblur = commit;
@@ -1399,6 +1450,11 @@ async function loadPriceDrops() {
   }
 }
 
+// Autocomplete du champ de recherche par nom, comme le champ "nom du skin" du dashboard
+// (liste native <datalist>, pas de fetch supplémentaire : DATA est déjà chargé).
+document.getElementById("itemNamesList").innerHTML =
+  DATA.map(it => `<option value="${it.n.replace(/"/g, "&quot;")}"></option>`).join("");
+
 const savedFilters = loadFilters();
 if (savedFilters) applySavedFilters(savedFilters);
 initCategories(savedFilters ? savedFilters.selectedCats : null);
@@ -1431,7 +1487,23 @@ connectSSE();
 // Au retour au premier plan, on force un reload complet pour être sûr d'avoir les
 // dernières données (DATA est figé dans le HTML généré, un simple re-fetch ne suffit pas).
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") location.reload();
+  if (document.visibilityState !== "visible") return;
+  // Avant : reload() systématique au retour au premier plan → toute la page (DATA compris,
+  // souvent 10000+ items) était reparsée et redessinée à chaque fois, d'où le délai perçu de
+  // plusieurs secondes (bien plus lourd que les quelques images encore à charger). La plupart
+  // du temps, aucun nouveau push n'a eu lieu depuis le dernier chargement : on vérifie via une
+  // requête HEAD légère (Last-Modified) et on ne recharge que si le fichier a effectivement
+  // changé ; sinon on se contente de rafraîchir les badges ⏱ / 🔻 et de reconnecter le SSE.
+  fetch(location.pathname, { method: "HEAD", cache: "no-store" })
+    .then(r => {
+      const lastMod = r.headers.get("Last-Modified");
+      if (lastMod && PAGE_LAST_MODIFIED && lastMod !== PAGE_LAST_MODIFIED) {
+        location.reload();
+      } else {
+        loadAlertedSkins(); loadPriceDrops();
+      }
+    })
+    .catch(() => { /* pas grave, le SSE + le refresh 5 min prennent le relais */ });
 });
 </script>
 <script>setTimeout(()=>location.reload(),300000)</script></body>
