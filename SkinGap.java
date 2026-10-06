@@ -714,7 +714,7 @@ public class SkinGap {
   <header>
     <div>
       <div class="wordmark">skin<span>gap</span></div>
-      <div class="tagline">écart prix de vente espéré vs prix minimum (trade-protect inclus) — __COUNT__ items — généré le __DATE__</div>
+      <div class="tagline">écart prix de vente espéré vs prix minimum listé (hors trade-protect) — __COUNT__ items — généré le __DATE__</div>
     </div>
     <a class="navlink" href="http://89.168.59.90:8080/7d44209968490653cb6ffcd0d1e101eb/">→ dashboard</a>
   </header>
@@ -723,15 +723,16 @@ public class SkinGap {
     <b>Lien Skinport :</b> chaque lien pointe vers la page marché de l'item, trié par prix croissant
     (<code>sort=price&order=asc</code>) et filtré sur le trade-protect ≤ 8 jours (<code>lock=8</code>), avec
     l'usure (<code>exterior=</code>) et StatTrak™/Souvenir détectés automatiquement depuis le nom.<br>
-    <b>Prix de vente espéré :</b> calculé selon le mode choisi dans "Mode prix" —
-    <b>Auto</b> (par défaut) prend le prix minimum demandé parmi les annonces tradable, sauf si la médiane
-    pondérée des ventes réelles (24h/7j/30j/90j, pondérée par volume) lui est <i>inférieure</i>, auquel cas
-    c'est elle qui est utilisée (affiché avec <span style="color:var(--accent)">Ⓜ</span>) ; <b>Médiane</b>
-    force toujours la médiane pondérée des ventes (retombe sur le prix minimum si aucune vente enregistrée) ;
-    <b>Min listé</b> force toujours le prix minimum demandé, quelle que soit la médiane. Le prix net après
-    commission Skinport (8% si &lt;1000€, 6% si ≥1000€) est celui utilisé pour l'écart ; le prix brut avant
-    commission est affiché entre parenthèses, à titre indicatif uniquement. L'écart = prix de vente net −
-    prix min listé (trade-protect inclus, ce qu'il faudrait payer pour acheter aujourd'hui).
+    <b>Prix de vente espéré :</b> calculé selon le mode choisi dans "Mode prix", avec exactement le même
+    calcul que l'extension (bandeau de chaque annonce) —
+    <b>Très rapide</b> (par défaut) : médiane pondérée des ventes −2 %, encore −15 % si moins de 0,5 vente
+    par jour, plafonné à 0,1 % sous le prix min listé ; <b>Auto</b> : prix min listé, sauf si la médiane
+    pondérée lui est <i>inférieure</i> (affiché avec <span style="color:var(--accent)">Ⓜ</span>) ;
+    <b>Médiane</b> : toujours la médiane pondérée (prix min listé si aucune vente) ; <b>Min listé</b> :
+    toujours le prix min listé. Le prix net après commission Skinport (8% si &lt;1000€, 6% si ≥1000€) est
+    celui utilisé pour l'écart ; le prix brut est affiché entre parenthèses, à titre indicatif.
+    <b>Écart</b> = prix de vente net − <b>Min</b> (prix minimum listé tradable, hors trade-protect). La colonne
+    <b>Min (TP)</b> (avec trade-protect) n'est qu'un indicateur : elle n'entre dans aucun calcul.
   </div>
 
   <div class="controls">
@@ -778,13 +779,10 @@ public class SkinGap {
     <div class="grp">
       <span class="lbl">Mode prix :</span>
       <select id="priceModeSel">
+        <option value="veryfast">Très rapide</option>
         <option value="auto">Auto (min, sauf si médiane plus basse)</option>
         <option value="median">Médiane des ventes</option>
         <option value="min">Min listé</option>
-        <option value="veryfast">Très rapide</option>
-        <option value="fast">Rapide</option>
-        <option value="normal">Normal</option>
-        <option value="patient">Patient</option>
       </select>
     </div>
     <div class="grp">
@@ -844,7 +842,8 @@ public class SkinGap {
         <th>Item</th>
         <th class="num">Prix espéré</th>
         <th class="num">Volume</th>
-        <th class="num">Min (TP)</th>
+        <th class="num">Min</th>
+        <th class="num" title="Prix min avec trade-protect : indicatif, hors calculs">Min (TP)</th>
         <th class="num">Écart</th>
         <th class="num">ROI %</th>
         <th></th>
@@ -873,7 +872,7 @@ const PRICEDROPS_API = DASHBOARD_URL + "api/pricedrops";
 const EVENTS_URL = DASHBOARD_URL + "events";
 const overrides = {}; // n -> valeur manuelle du prix de vente espéré (brut, avant taxe)
 let volPeriod = "7";
-let priceMode = "auto"; // "auto" | "median" | "min"
+let priceMode = "veryfast"; // "veryfast" | "auto" | "median" | "min"  (mêmes modes que l'extension)
 let sortMode = "gap_desc";
 let searchTerm = "";
 let minVol = 0;
@@ -920,7 +919,7 @@ function loadFilters() {
 
 function applySavedFilters(f) {
   if (f.volPeriod !== undefined) volPeriod = f.volPeriod;
-  if (f.priceMode !== undefined) priceMode = f.priceMode;
+  if (f.priceMode !== undefined) priceMode = ["veryfast", "auto", "median", "min"].includes(f.priceMode) ? f.priceMode : "veryfast";
   if (f.sortMode !== undefined) sortMode = f.sortMode;
   if (f.searchTerm !== undefined) searchTerm = f.searchTerm;
   if (f.minVol !== undefined) minVol = f.minVol;
@@ -953,7 +952,7 @@ function applySavedFilters(f) {
 
 // Valeurs par défaut, utilisées par le bouton "Réinitialiser les filtres".
 const FILTER_DEFAULTS = {
-  volPeriod: "7", priceMode: "auto", sortMode: "gap_desc", searchTerm: "",
+  volPeriod: "7", priceMode: "veryfast", sortMode: "gap_desc", searchTerm: "",
   minVol: 0, priceMin: 0, priceMax: Infinity, roiMin: -Infinity, roiMax: Infinity,
   typeFilter: "all", gapMin: -Infinity, gapMax: Infinity, newLowFilter: "all"
 };
@@ -1021,19 +1020,23 @@ function buildLink(it) {
   return url;
 }
 
-// Prix de vente espéré brut (avant taxe), selon le mode choisi :
-// - "auto"   : prix minimum demandé (ask), sauf si la médiane pondérée des ventes (wm) est
-//              disponible et strictement inférieure -> on prend la médiane à la place.
-// - "median" : toujours la médiane pondérée des ventes ; si aucune vente enregistrée (wm <= 0),
-//              retombe sur le prix minimum demandé.
-// - "min"    : toujours le prix minimum demandé, quelle que soit la médiane.
-// - "veryfast"/"fast"/"normal"/"patient" : un des 4 prix du modèle de vitesse de revente
-//              (voir Formule de calcul des 4 prix espérés Skinport.md / PriceModelResult côté
-//              génération) — déjà calculés dans DATA (pvf/pft/pnm/ppt), simplement pas encore
-//              exposés dans ce sélecteur jusqu'ici. Retombe sur "auto" si le modèle n'a pas pu
-//              être calculé pour cet item (fv/conf <= 0, cf. hasPriceModel() côté serveur).
+// Prix de vente espéré BRUT — exactement le même calcul que l'extension (expectedPrice dans background.js) :
+// - "veryfast" : base = médiane pondérée des ventes (wm), à défaut le prix min listé ; -2 % ; -15 % de plus
+//                si moins de 0,5 vente/jour (24h, sinon 7j/7, 30j/30, 90j/90) ; plafonné à 0,1 % sous le
+//                prix min listé ; arrondi au centime (min 0,01).
+// - "auto"     : prix min listé (ask), sauf si la médiane pondérée lui est inférieure.
+// - "median"   : médiane pondérée, à défaut le prix min listé.
+// - "min"      : toujours le prix min listé.
 // Une valeur éditée manuellement (override) remplace tout le reste.
 // Retourne { raw, usedMedian } pour piloter aussi le badge Ⓜ à l'affichage.
+function dailyRate(it) {
+  if (it.v24 > 0) return it.v24;
+  if (it.v7 > 0) return it.v7 / 7;
+  if (it.v30 > 0) return it.v30 / 30;
+  if (it.v90 > 0) return it.v90 / 90;
+  return 0;
+}
+
 function rawExpectedOf(it) {
   if (overrides[it.n] !== undefined) return { raw: overrides[it.n], usedMedian: false };
   const hasWm = it.wm !== null && it.wm !== undefined && it.wm > 0;
@@ -1043,17 +1046,16 @@ function rawExpectedOf(it) {
   if (priceMode === "min") {
     return { raw: it.ask, usedMedian: false };
   }
-  const hasModel = it.fv > 0 && it.conf > 0;
-  // "Très rapide" : même formule que la page détail du skin — une petite décote sous le prix
-  // le plus bas déjà listé (jamais négative) pour rester la meilleure offre du marché et
-  // partir dans la journée, plutôt que l'ancien calcul basé sur pvf (modèle statistique).
   if (priceMode === "veryfast") {
-    const undercut = Math.max(0.01, Math.round(it.ask * 0.01 * 100) / 100);
-    return { raw: Math.max(0.01, Math.round((it.ask - undercut) * 100) / 100), usedMedian: false };
+    const base = hasWm ? it.wm : it.ask;
+    let raw = base * (1 - 0.02);
+    if (dailyRate(it) < 0.5) raw *= 0.85;
+    const cap = it.ask * 0.999;
+    const usedMedian = hasWm && raw < cap;
+    raw = Math.min(raw, cap);
+    raw = Math.max(0.01, Math.round(raw * 100) / 100);
+    return { raw: raw, usedMedian: usedMedian };
   }
-  if (priceMode === "fast") return hasModel ? { raw: it.pft, usedMedian: false } : { raw: it.ask, usedMedian: false };
-  if (priceMode === "normal") return hasModel ? { raw: it.pnm, usedMedian: false } : { raw: it.ask, usedMedian: false };
-  if (priceMode === "patient") return hasModel ? { raw: it.ppt, usedMedian: false } : { raw: it.ask, usedMedian: false };
   // auto
   if (hasWm && it.wm < it.ask) return { raw: it.wm, usedMedian: true };
   return { raw: it.ask, usedMedian: false };
@@ -1066,7 +1068,7 @@ function computeRows() {
     if (exp.raw === null || exp.raw === undefined) return false;
     const vol = volumeOf(it, volPeriod);
     if ((vol ?? 0) < minVol) return false;
-    if (it.min < priceMin || it.min > priceMax) return false;
+    if (it.ask < priceMin || it.ask > priceMax) return false;
     if (typeFilter !== "all" && itemType(it.n) !== typeFilter) return false;
     if (selectedCats && !selectedCats.has(catOf(it))) return false;
     if (hideAlerted && alertedSkins.has(it.n.toLowerCase())) return false;
@@ -1077,8 +1079,8 @@ function computeRows() {
   rows = rows.map(it => {
     const exp = rawExpectedOf(it);
     const med = withTax(exp.raw);
-    const gap = med - it.min;
-    const roi = it.min > 0 ? (gap / it.min) * 100 : 0;
+    const gap = med - it.ask;
+    const roi = it.ask > 0 ? (gap / it.ask) * 100 : 0;
     return { it, rawMed: exp.raw, usedMedian: exp.usedMedian, med, gap, roi, vol: volumeOf(it, volPeriod) };
   }).filter(r => r.roi >= roiMin && r.roi <= roiMax && r.gap >= gapMin && r.gap <= gapMax);
   switch (sortMode) {
@@ -1086,8 +1088,8 @@ function computeRows() {
     case "gap_asc": rows.sort((a,b) => a.gap - b.gap); break;
     case "roi_desc": rows.sort((a,b) => b.roi - a.roi); break;
     case "roi_asc": rows.sort((a,b) => a.roi - b.roi); break;
-    case "min_asc": rows.sort((a,b) => a.it.min - b.it.min); break;
-    case "min_desc": rows.sort((a,b) => b.it.min - a.it.min); break;
+    case "min_asc": rows.sort((a,b) => a.it.ask - b.it.ask); break;
+    case "min_desc": rows.sort((a,b) => b.it.ask - a.it.ask); break;
     case "exp_asc": rows.sort((a,b) => a.med - b.med); break;
     case "exp_desc": rows.sort((a,b) => b.med - a.med); break;
     case "vol_desc": rows.sort((a,b) => (b.vol ?? 0) - (a.vol ?? 0)); break;
@@ -1178,8 +1180,16 @@ function render() {
     tdVol.textContent = (r.vol ?? "-");
     tr.appendChild(tdVol);
 
+    const tdAsk = document.createElement("td");
+    tdAsk.className = "num";
+    tdAsk.textContent = r.it.ask.toFixed(2) + " €";
+    tr.appendChild(tdAsk);
+
+    // Min avec trade-protect : simple indicateur, jamais utilisé dans les calculs
     const tdMin = document.createElement("td");
     tdMin.className = "num";
+    tdMin.style.opacity = "0.55";
+    tdMin.title = "Avec trade-protect : indicatif, hors calculs";
     tdMin.textContent = r.it.min.toFixed(2) + " €";
     tr.appendChild(tdMin);
 
