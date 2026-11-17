@@ -122,7 +122,7 @@ public class SkinGap {
 
     record Result(String name, String marketPage, SalesVolumes volumes, double minWithLocked, double askRaw,
                   double medianRaw, String image, MarketStats tradable, MarketStats global, PriceModelResult model,
-                  String version) {}
+                  String version, FastPrice fast) {}
 
     // Clé d'un item Skinport. Depuis l'ajout du champ "version" à l'API (/v1/items,
     // /v1/sales/history, /v1/sales/out-of-stock), un même market_hash_name peut apparaître
@@ -446,6 +446,209 @@ public class SkinGap {
                 liquidity, disagreement, trend);
     }
 
+    // ===================================================================
+    // Prix "Très rapide" v2 — prix auquel l'item part en 24-48 h. Calibré le 17/11/2026 sur le
+    // flux live Skinport (chaque annonce / vente en temps réel) croisé avec l'API REST ; détails,
+    // chiffres et limites dans le README (section "Implémentation actuelle").
+    //
+    // Ce que les données ont montré (skins d'armes, couteaux, gants) :
+    //  - deux files : les items tradables se vendent au min tradable L, les items sous trade-lock
+    //    au min verrouillé G (~10 % moins cher) ; l'historique REST mélange les deux ;
+    //  - l'annonce TRADABLE la moins chère est achetée au taux λ·A(r), λ = ventes/jour de l'item,
+    //    r = prix / médiane des prix payés récemment ; A baisse quand le prix dépasse la médiane
+    //    (élasticité-prix B) et plafonne à A_MAX sous R_LO·médiane (baisser davantage n'accélère
+    //    plus la vente) ;
+    //  - λ estimé par fenêtres disjointes pondérées par récence prédit bien les ventes observées
+    //    (l'ancien "ventes 24 h, sinon 7 j / 7..." surestimait la liquidité d'environ 33 %).
+    //
+    // Calcul : P(vendu sous 48 h au prix P) = 1 - exp(-2 · λ · A(P / médiane)). On prend le prix le
+    // plus haut qui atteint 80 % (≈ 55 % sous 24 h) ; si c'est impossible même à R_LO·médiane, on
+    // garde R_LO·médiane (meilleure chance réelle, probabilité affichée) ; jamais au-dessus du min
+    // tradable - 1 centime (une annonce moins chère passerait avant).
+    //
+    // λ et la médiane viennent des 4 fenêtres Skinport (24 h / 7 j / 30 j / 90 j), qui se
+    // RECOUVRENT : on les redécoupe en périodes disjointes (0-1 j, 1-7 j, 7-30 j, 30-90 j) pondérées
+    // par ancienneté (demi-vie adaptative : la plus courte qui donne assez de ventes) ; la médiane
+    // est celle d'un mélange, pondéré pareil, de lois log-normales asymétriques ajustées sur
+    // min / médiane / max de chaque fenêtre.
+    // ===================================================================
+    record SalesWindows(double[] n, double[] lo, double[] med, double[] hi) {
+        // index 0..3 = 24 h, 7 j, 30 j, 90 j ; lo/med/hi = 0 si aucune vente dans la fenêtre
+        static SalesWindows of(Map<String, Object> h24, Map<String, Object> h7, Map<String, Object> h30, Map<String, Object> h90) {
+            List<Map<String, Object>> ws = List.of(h24, h7, h30, h90);
+            double[] n = new double[4], lo = new double[4], med = new double[4], hi = new double[4];
+            for (int i = 0; i < 4; i++) {
+                n[i] = asInt(ws.get(i).get("volume"));
+                lo[i] = asDouble(ws.get(i).get("min"));
+                med[i] = asDouble(ws.get(i).get("median"));
+                hi[i] = asDouble(ws.get(i).get("max"));
+            }
+            return new SalesWindows(n, lo, med, hi);
+        }
+        static final SalesWindows EMPTY = new SalesWindows(new double[4], new double[4], new double[4], new double[4]);
+    }
+
+    // price = prix brut conseillé (0 si incalculable), lambda = ventes/jour estimées,
+    // prob48h = probabilité estimée de vente sous 48 h à ce prix, mode = branche du calcul.
+    record FastPrice(double price, double lambda, double prob48h, String mode) {
+        static final FastPrice NONE = new FastPrice(0, 0, 0, "none");
+    }
+
+    static final class FastSellModel {
+        static final double HORIZON_DAYS = 2.0;   // objectif : vendu sous 48 h...
+        static final double TARGET_PROB = 0.80;   // ...avec 80 % de chances (≈ 55 % sous 24 h)
+        static final double TICK = 0.01;          // pas de prix Skinport
+        static final double[] AGES = {0.5, 4.0, 18.5, 60.0};   // âge moyen (j) des périodes disjointes
+        static final double[] DURS = {1.0, 6.0, 23.0, 60.0};   // durée (j) de ces périodes
+        static final double[] TAUS = {2, 4, 8, 16, 32, 64, Double.POSITIVE_INFINITY}; // demi-vies essayées
+        static final double N_MIN = 4.0;          // ventes "effectives" minimum avant d'élargir
+        static final double SIGMA0 = 0.06;        // dispersion a priori des prix de vente (log)
+        static final double K_PRIOR = 2.0;        // poids de l'a priori, en nombre de ventes
+        // Acceptation MESURÉE (flux live, 17/11/2026, 149 achats de têtes de file sur ~12 000 skins) :
+        // une annonce TRADABLE en tête de file (moins chère que toutes les autres annonces tradables)
+        // au prix P est achetée au taux λ^LAMBDA_EXP · A(r), r = P / médiane des prix payés récemment :
+        //     A(r) = A_MAX                      si r <= R_LO   (baisser davantage n'accélère plus)
+        //     A(r) = A_MAX · (r / R_LO)^(-B)    sinon          (élasticité-prix B, IC 95 % [1,4 ; 4,6])
+        // LAMBDA_EXP < 1 : sur les items très liquides, plus de concurrence en tête de file.
+        static final double A_MAX = 0.80;
+        static final double R_LO = 0.89;
+        static final double B = 3.0;
+        static final double LAMBDA_EXP = 0.80;
+        static final double NO_SALES_DISCOUNT = 0.20;  // aucune vente sur 90 j
+
+        static double erfc(double x) { // Numerical Recipes erfcc, erreur relative < 1.2e-7
+            double z = Math.abs(x);
+            double t = 1.0 / (1.0 + 0.5 * z);
+            double r = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418
+                    + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587
+                    + t * (-0.82215223 + t * 0.17087277)))))))));
+            return x >= 0 ? r : 2.0 - r;
+        }
+
+        static double phi(double x) { return 0.5 * erfc(-x / Math.sqrt(2.0)); }
+
+        static double phiInv(double p) { // Acklam
+            final double[] a = {-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00};
+            final double[] b = {-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01};
+            final double[] c = {-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00, -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00};
+            final double[] d = {7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00};
+            final double pl = 0.02425;
+            if (p < pl) {
+                double q = Math.sqrt(-2 * Math.log(p));
+                return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+            }
+            if (p > 1 - pl) {
+                double q = Math.sqrt(-2 * Math.log(1 - p));
+                return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+            }
+            double q = p - 0.5, r = q * q;
+            return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+        }
+
+        // Composante du mélange : {poids, log-médiane, sigma bas, sigma haut}
+        static double[] windowDist(double n, double lo, double med, double hi) {
+            if (n <= 0 || !(med > 0)) return null;
+            double xm = Math.log(med), sl, sh;
+            if (n >= 2 && lo > 0 && hi > 0) {
+                double z = phiInv((n - 0.375) / (n + 0.25)); // position attendue du max de n ventes (Blom)
+                sl = (xm - Math.log(Math.min(lo, med))) / z;
+                sh = (Math.log(Math.max(hi, med)) - xm) / z;
+                sl = (n * sl + K_PRIOR * SIGMA0) / (n + K_PRIOR);
+                sh = (n * sh + K_PRIOR * SIGMA0) / (n + K_PRIOR);
+            } else {
+                sl = sh = SIGMA0;
+            }
+            sl = Math.min(Math.max(sl, 0.005), 0.6);
+            sh = Math.min(Math.max(sh, 0.005), 0.6);
+            return new double[]{0, xm, sl, sh};
+        }
+
+        static double cdf(double x, List<double[]> comps) {
+            double s = 0;
+            for (double[] c : comps) s += c[0] * phi((x - c[1]) / (x < c[1] ? c[2] : c[3]));
+            return s;
+        }
+
+        static double quantile(double p, List<double[]> comps) {
+            double lo = -20, hi = 20;
+            for (int i = 0; i < 80; i++) {
+                double mid = (lo + hi) / 2;
+                if (cdf(mid, comps) < p) lo = mid; else hi = mid;
+            }
+            return (lo + hi) / 2;
+        }
+
+        static double floorCents(double p) { return Math.max(TICK, Math.floor(p * 100 + 1e-9) / 100); }
+
+        static double accept(double r) {
+            return r <= R_LO ? A_MAX : A_MAX * Math.pow(r / R_LO, -B);
+        }
+
+        /** L = min tradable (annonces achetables tout de suite), G = min toutes annonces (trade-lock inclus). */
+        static FastPrice compute(SalesWindows s, double L, double G) {
+            if (!(L > 0)) return FastPrice.NONE;
+            double[] n = s.n();
+            double[] c = {n[0], Math.max(0, n[1] - n[0]), Math.max(0, n[2] - n[1]), Math.max(0, n[3] - n[2])};
+            double[] w = new double[4];
+            double neff = 0;
+            for (double tau : TAUS) {
+                neff = 0;
+                for (int k = 0; k < 4; k++) {
+                    w[k] = Double.isInfinite(tau) ? 1.0 : Math.exp(-AGES[k] / tau);
+                    neff += w[k] * c[k];
+                }
+                if (neff >= N_MIN || Double.isInfinite(tau)) break;
+            }
+            double den = 0;
+            for (int k = 0; k < 4; k++) den += w[k] * DURS[k];
+            double lambda = den > 0 ? neff / den : 0;
+
+            // Poids de mélange des fenêtres CUMULATIVES équivalents à la pondération des périodes
+            // disjointes : Σ w_k·c_k·F_(k) = n1(w0-w1)F_24h + n7(w1-w2)F_7j + n30(w2-w3)F_30j + n90·w3·F_90j
+            double[] beta = {n[0] * (w[0] - w[1]), n[1] * (w[1] - w[2]), n[2] * (w[2] - w[3]), n[3] * w[3]};
+            List<double[]> comps = new ArrayList<>();
+            double tot = 0;
+            for (int k = 0; k < 4; k++) {
+                if (beta[k] <= 0) continue;
+                double[] wd = windowDist(n[k], s.lo()[k], s.med()[k], s.hi()[k]);
+                if (wd == null) continue;
+                wd[0] = beta[k];
+                tot += beta[k];
+                comps.add(wd);
+            }
+            double cap = L - TICK;
+            if (comps.isEmpty() || tot <= 0) {
+                // Aucune vente sur 90 jours : rien ne garantit une vente en 48 h ; seule une forte
+                // décote sous la tête de file peut attirer un acheteur opportuniste.
+                double front = (G > 0 ? Math.min(G, L) : L);
+                return new FastPrice(floorCents(Math.min(cap, front * (1 - NO_SALES_DISCOUNT))), 0, 0, "no-sales");
+            }
+            for (double[] cp : comps) cp[0] /= tot;
+
+            double med = Math.exp(quantile(0.5, comps));   // prix "typique" récent (pondéré par récence)
+            double xStar = -Math.log(1 - TARGET_PROB);       // nb moyen d'achats requis sur l'horizon
+            double lamEff = Math.pow(lambda, LAMBDA_EXP);
+            double xMax = HORIZON_DAYS * lamEff * A_MAX;     // ... et le maximum atteignable (prix <= R_LO·med)
+            double r;
+            String mode;
+            if (B <= 0) {
+                r = Double.POSITIVE_INFINITY;                // pas d'effet prix : la tête de file suffit
+                mode = "front";
+            } else if (xMax >= xStar) {
+                r = R_LO * Math.pow(xMax / xStar, 1 / B);    // plus haut prix qui atteint la cible
+                mode = "target";
+            } else {
+                r = R_LO;                                    // cible inatteignable : meilleure chance réelle
+                mode = "best-effort";
+            }
+            double p = med * r;
+            if (p >= cap) { p = cap; mode += "+cap"; }
+            p = floorCents(p);
+            double prob = 1 - Math.exp(-HORIZON_DAYS * lamEff * accept(p / med));
+            return new FastPrice(p, lambda, prob, mode);
+        }
+    }
+
     // Doppler : Skinport agrège toutes les phases (1-4, Ruby/Sapphire/Black Pearl, Gamma Doppler...)
     // sous le même market_hash_name générique "Doppler", sans distinction de phase dans le prix.
     // Le "min" et le "prix espéré" peuvent donc chacun venir d'une phase différente -> écart non fiable.
@@ -525,6 +728,7 @@ public class SkinGap {
         }
 
         Map<String, SalesVolumes> volumesByName = new HashMap<>();
+        Map<String, SalesWindows> windowsByName = new HashMap<>();
         Map<String, String> marketPageByName = new HashMap<>();
         for (Object o : salesList) {
             Map<String, Object> item = (Map<String, Object>) o;
@@ -533,6 +737,7 @@ public class SkinGap {
             Map<String, Object> h7 = sub(item, "last_7_days");
             Map<String, Object> h30 = sub(item, "last_30_days");
             Map<String, Object> h90 = sub(item, "last_90_days");
+            windowsByName.put(name, SalesWindows.of(h24, h7, h30, h90));
             volumesByName.put(name, new SalesVolumes(
                     asInt(h24.get("volume")), asInt(h7.get("volume")),
                     asInt(h30.get("volume")), asInt(h90.get("volume")),
@@ -614,8 +819,10 @@ public class SkinGap {
             MarketStats gStats = globalStats.getOrDefault(name, MarketStats.EMPTY);
             PriceModelResult model = computePriceModel(vol, tStats, gStats);
 
+            FastPrice fast = FastSellModel.compute(windowsByName.getOrDefault(name, SalesWindows.EMPTY),
+                    askRaw, e.getValue());
             results.add(new Result(name, mp, vol, e.getValue(), askRaw, weighted, image, tStats, gStats, model,
-                    versionByKey.get(name)));
+                    versionByKey.get(name), fast));
         }
         results.sort(Comparator.comparing(Result::name));
 
@@ -657,7 +864,13 @@ public class SkinGap {
                 // (tmed). Sert au "stock en jours" (qt / ventes par jour) côté dashboard.
                 .append(",\"qt\":").append((int) r.tradable().quantity())
                 .append(",\"qg\":").append((int) r.global().quantity())
-                .append(",\"tmed\":").append(r.tradable().median());
+                .append(",\"tmed\":").append(r.tradable().median())
+                // Prix "Très rapide" v2 (vente visée sous 24-48 h, voir FastSellModel) : prix brut
+                // conseillé, ventes/jour estimées, probabilité estimée de vente sous 48 h, branche.
+                .append(",\"xf\":").append(r.fast().price())
+                .append(",\"xl\":").append(Math.round(r.fast().lambda() * 1000) / 1000.0)
+                .append(",\"xp\":").append(Math.round(r.fast().prob48h() * 1000) / 1000.0)
+                .append(",\"xm\":\"").append(r.fast().mode()).append("\"");
             if (r.version() != null) {
                 data.append(",\"ver\":\"").append(jsonEscape(r.version())).append("\"");
             }
@@ -805,10 +1018,12 @@ public class SkinGap {
     <b>Lien Skinport :</b> chaque lien pointe vers la page marché de l'item, trié par prix croissant
     (<code>sort=price&order=asc</code>) et filtré sur le trade-protect ≤ 8 jours (<code>lock=8</code>), avec
     l'usure (<code>exterior=</code>) et StatTrak™/Souvenir détectés automatiquement depuis le nom.<br>
-    <b>Prix de vente espéré :</b> calculé selon le mode choisi dans "Mode prix", avec exactement le même
-    calcul que l'extension (bandeau de chaque annonce) —
-    <b>Très rapide</b> (par défaut) : médiane pondérée des ventes −2 %, encore −15 % si moins de 0,5 vente
-    par jour, plafonné à 0,1 % sous le prix min listé ; <b>Auto</b> : prix min listé, sauf si la médiane
+    <b>Prix de vente espéré :</b> calculé selon le mode choisi dans "Mode prix" (l'extension doit lire le
+    champ <code>xf</code> de skins.json pour avoir le même "Très rapide") —
+    <b>Très rapide</b> (par défaut) : le prix le plus haut qui laisse ~80 % de chances de vendre sous 48 h
+    (~55 % sous 24 h), estimé à partir du rythme de ventes récent et des prix réellement payés ces derniers
+    jours, jamais au-dessus du min tradable − 1 centime (probabilité et rythme au survol du prix) ;
+    <b>Auto</b> : prix min listé, sauf si la médiane
     pondérée lui est <i>inférieure</i> (affiché avec <span style="color:var(--accent)">Ⓜ</span>) ;
     <b>Médiane</b> : toujours la médiane pondérée (prix min listé si aucune vente) ; <b>Min listé</b> :
     toujours le prix min listé. Le prix net après commission Skinport (8% si &lt;1000€, 6% si ≥1000€) est
@@ -848,6 +1063,10 @@ public class SkinGap {
       <input type="number" id="roiMin" step="0.1" placeholder="min" style="width:56px">
       <span class="lbl">–</span>
       <input type="number" id="roiMax" step="0.1" placeholder="max" style="width:56px">
+    </div>
+    <div class="grp" title="Mode Très rapide : probabilité estimée de vente sous 48 h au prix espéré">
+      <span class="lbl">Proba 48h ≥ % :</span>
+      <input type="number" id="probMin" min="0" max="100" step="5" placeholder="0" style="width:56px">
     </div>
     <div class="grp">
       <span class="lbl">Type :</span>
@@ -965,6 +1184,7 @@ let searchTerm = "";
 let minVol = 0;
 let priceMin = 0, priceMax = Infinity;
 let roiMin = -Infinity, roiMax = Infinity;
+let probMin = 0; // en %, filtre sur "xp" (proba de vente sous 48 h), mode Très rapide uniquement
 let typeFilter = "all";
 let gapMin = -Infinity, gapMax = Infinity;
 let hideAlerted = false;
@@ -986,6 +1206,7 @@ function serializeFilters() {
     priceMax: isFinite(priceMax) ? priceMax : null,
     roiMin: isFinite(roiMin) ? roiMin : null,
     roiMax: isFinite(roiMax) ? roiMax : null,
+    probMin,
     gapMin: isFinite(gapMin) ? gapMin : null,
     gapMax: isFinite(gapMax) ? gapMax : null,
     typeFilter, hideAlerted, newLowFilter,
@@ -1014,6 +1235,7 @@ function applySavedFilters(f) {
   priceMax = (f.priceMax === null || f.priceMax === undefined) ? Infinity : f.priceMax;
   roiMin = (f.roiMin === null || f.roiMin === undefined) ? -Infinity : f.roiMin;
   roiMax = (f.roiMax === null || f.roiMax === undefined) ? Infinity : f.roiMax;
+  probMin = f.probMin || 0;
   gapMin = (f.gapMin === null || f.gapMin === undefined) ? -Infinity : f.gapMin;
   gapMax = (f.gapMax === null || f.gapMax === undefined) ? Infinity : f.gapMax;
   if (f.typeFilter !== undefined) typeFilter = f.typeFilter;
@@ -1029,6 +1251,7 @@ function applySavedFilters(f) {
   document.getElementById("priceMax").value = f.priceMax ?? "";
   document.getElementById("roiMin").value = f.roiMin ?? "";
   document.getElementById("roiMax").value = f.roiMax ?? "";
+  document.getElementById("probMin").value = probMin || "";
   document.getElementById("gapMin").value = f.gapMin ?? "";
   document.getElementById("gapMax").value = f.gapMax ?? "";
   document.getElementById("typeSel").value = typeFilter;
@@ -1107,10 +1330,11 @@ function buildLink(it) {
   return url;
 }
 
-// Prix de vente espéré BRUT — exactement le même calcul que l'extension (expectedPrice dans background.js) :
-// - "veryfast" : base = médiane pondérée des ventes (wm), à défaut le prix min listé ; -2 % ; -15 % de plus
-//                si moins de 0,5 vente/jour (24h, sinon 7j/7, 30j/30, 90j/90) ; plafonné à 0,1 % sous le
-//                prix min listé ; arrondi au centime (min 0,01).
+// Prix de vente espéré BRUT :
+// - "veryfast" : prix "xf" calculé par FastSellModel (SkinGap.java) — le plus haut prix qui donne ~80 %
+//                de chances de vente sous 48 h d'après le rythme de ventes (λ) et la distribution des prix
+//                payés récemment, plafonné 1 centime sous le min tradable. Ancien calcul (médiane pondérée
+//                −2 %, −15 % si < 0,5 vente/jour, plafonné à 0,1 % sous le min) seulement si "xf" manque.
 // - "auto"     : prix min listé (ask), sauf si la médiane pondérée lui est inférieure.
 // - "median"   : médiane pondérée, à défaut le prix min listé.
 // - "min"      : toujours le prix min listé.
@@ -1126,7 +1350,7 @@ function dailyRate(it) {
 
 // Nombre de jours de ventes que représente le stock tradable actuel ; null si pas de ventes.
 function stockDays(it) {
-  const dr = dailyRate(it);
+  const dr = (it.xl !== undefined && it.xl > 0) ? it.xl : dailyRate(it);
   if (it.qt === undefined || dr <= 0) return null;
   return it.qt / dr;
 }
@@ -1141,6 +1365,9 @@ function rawExpectedOf(it) {
     return { raw: it.ask, usedMedian: false };
   }
   if (priceMode === "veryfast") {
+    // v2 (nov. 2026) : prix calculé côté Java par FastSellModel (vente visée sous 24-48 h),
+    // exporté dans skins.json ("xf"). Repli sur l'ancien calcul si le champ est absent.
+    if (it.xf !== undefined && it.xf > 0) return { raw: it.xf, usedMedian: false };
     const base = hasWm ? it.wm : it.ask;
     let raw = base * (1 - 0.02);
     if (dailyRate(it) < 0.5) raw *= 0.85;
@@ -1163,6 +1390,7 @@ function computeRows() {
     const vol = volumeOf(it, volPeriod);
     if ((vol ?? 0) < minVol) return false;
     if (it.ask < priceMin || it.ask > priceMax) return false;
+    if (probMin > 0 && priceMode === "veryfast" && it.xp !== undefined && it.xp * 100 < probMin) return false;
     if (typeFilter !== "all" && itemType(it.n) !== typeFilter) return false;
     if (selectedCats && !selectedCats.has(catOf(it))) return false;
     if (hideAlerted && alertedSkins.has(it.n.toLowerCase())) return false;
@@ -1247,6 +1475,11 @@ function render() {
     span.className = "med-val" + (isOverride ? " overridden" : "");
     span.textContent = r.med.toFixed(2) + " €";
     span.title = "Cliquer pour modifier manuellement (valeur brute, sans taxe)";
+    if (priceMode === "veryfast" && !isOverride && r.it.xf > 0) {
+      span.title = "≈ " + Math.round((r.it.xp || 0) * 100) + " % de chances de vente sous 48 h à ce prix · "
+        + (r.it.xl || 0).toFixed(2) + " vente(s)/jour estimée(s) — " + span.title;
+      if ((r.it.xp || 0) < 0.5) span.style.opacity = "0.6"; // vente sous 48 h peu probable même à ce prix
+    }
     span.onclick = () => startEdit(r.it.n, r.rawMed, tdMed);
     tdMed.appendChild(span);
     if (!isOverride && r.usedMedian) {
@@ -1454,6 +1687,11 @@ document.getElementById("roiMax").addEventListener("input", (e) => {
   roiMax = isNaN(v) ? Infinity : v;
   shown = PAGE; render(); saveFilters();
 });
+document.getElementById("probMin").addEventListener("input", (e) => {
+  const v = parseFloat(e.target.value);
+  probMin = isNaN(v) ? 0 : v;
+  shown = PAGE; render(); saveFilters();
+});
 document.getElementById("gapMin").addEventListener("input", (e) => {
   const v = parseFloat(e.target.value);
   gapMin = isNaN(v) ? -Infinity : v;
@@ -1488,6 +1726,7 @@ document.getElementById("resetFilters").addEventListener("click", () => {
   priceMax = FILTER_DEFAULTS.priceMax;
   roiMin = FILTER_DEFAULTS.roiMin;
   roiMax = FILTER_DEFAULTS.roiMax;
+  probMin = 0;
   typeFilter = FILTER_DEFAULTS.typeFilter;
   gapMin = FILTER_DEFAULTS.gapMin;
   gapMax = FILTER_DEFAULTS.gapMax;
@@ -1503,6 +1742,7 @@ document.getElementById("resetFilters").addEventListener("click", () => {
   document.getElementById("priceMax").value = "";
   document.getElementById("roiMin").value = "";
   document.getElementById("roiMax").value = "";
+  document.getElementById("probMin").value = "";
   document.getElementById("gapMin").value = "";
   document.getElementById("gapMax").value = "";
   document.getElementById("typeSel").value = "all";
