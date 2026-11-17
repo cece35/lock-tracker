@@ -121,16 +121,42 @@ public class SkinGap {
     }
 
     record Result(String name, String marketPage, SalesVolumes volumes, double minWithLocked, double askRaw,
-                  double medianRaw, String image, MarketStats tradable, MarketStats global, PriceModelResult model) {}
+                  double medianRaw, String image, MarketStats tradable, MarketStats global, PriceModelResult model,
+                  String version) {}
+
+    // Clé d'un item Skinport. Depuis l'ajout du champ "version" à l'API (/v1/items,
+    // /v1/sales/history, /v1/sales/out-of-stock), un même market_hash_name peut apparaître
+    // plusieurs fois : une entrée par phase Doppler (Phase 1-4, Ruby, Sapphire, Black Pearl,
+    // Emerald) et, dans l'historique des ventes, des variantes "Blue Gem" / "Tier 1" / "Tier 2"
+    // / "7th Max"... des Case Hardened, Marble Fade, etc. Indexer par le seul nom faisait
+    // écraser l'historique normal par celui de la variante rare (ex. AK-47 | Case Hardened (FT) :
+    // médiane 7j 163 € pour l'item normal, 386 € pour "Tier 2" -> faux écart énorme).
+    // Items sans version : la clé reste le nom exact (rétro-compatible avec skins.json, le
+    // dashboard et l'extension). Items avec version : "nom [version]".
+    static String itemKey(String name, Object version) {
+        if (version == null) return name;
+        String v = String.valueOf(version);
+        return v.isBlank() || v.equals("default") ? name : name + " [" + v + "]";
+    }
+
+    // En-tête Authorization Skinport (Basic clientId:clientSecret), ou null si les secrets ne
+    // sont pas configurés. Envoyé aussi sur les endpoints publics (/v1/items, /v1/sales/history) :
+    // d'après la doc Skinport (Rate Limits), avec une clé API le quota (8 req / 5 min) est compté
+    // PAR CLÉ ; sans clé il est compté par réseau (toutes les IPv4 d'un même /24 partagent le
+    // même quota). Les runners GitHub Actions partagent leurs plages d'IP avec d'autres projets
+    // qui interrogent aussi Skinport -> des 429 "gratuits" possibles sans la clé.
+    static String AUTH_HEADER = null;
 
     static String fetchUrl(HttpClient client, String url) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest.Builder rb = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .header("Accept-Encoding", "br")
-                .GET()
-                .build();
-        HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+                .GET();
+        if (AUTH_HEADER != null) rb.header("Authorization", AUTH_HEADER);
+        HttpResponse<byte[]> response = client.send(rb.build(), HttpResponse.BodyHandlers.ofByteArray());
         if (response.statusCode() != 200) {
+            // 429 : la doc précise que chaque requête envoyée pendant le blocage le prolonge
+            // d'une fenêtre complète -> on échoue tout de suite, sans retry.
             throw new RuntimeException("Erreur HTTP " + response.statusCode() + " pour " + url);
         }
         Path tmp = Files.createTempFile("skinport", ".br");
@@ -202,8 +228,26 @@ public class SkinGap {
     record GlobalAccountStats(double totalDepense, double totalGagne, double totalRetire,
                                double totalFrais, double benefice, int nbTransactions) {}
 
+    // Solde du compte vendeur (/v1/account/balance) : current = disponible, pending = ventes pas
+    // encore réglées par le prestataire de paiement, held = ventes d'items encore sous trade
+    // protection (bloquées jusqu'à la fin de la protection). Renvoie null si indisponible
+    // (compte sans compte vendeur -> 400 validation_error, ou endpoint en erreur) : non bloquant.
     @SuppressWarnings("unchecked")
-    static String buildAccountStatsJson(List<Map<String, Object>> transactions, Map<String, String> imageByName) {
+    static Map<String, Object> fetchBalance(HttpClient client, String authHeader) {
+        try {
+            Map<String, Object> resp = (Map<String, Object>) new JsonParser(fetchUrlAuth(client,
+                    "https://api.skinport.com/v1/account/balance?currency=EUR", authHeader)).parse();
+            Object data = resp.get("data");
+            return data instanceof Map ? (Map<String, Object>) data : null;
+        } catch (Exception e) {
+            System.err.println("Solde du compte indisponible : " + e.getMessage());
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    static String buildAccountStatsJson(List<Map<String, Object>> transactions, Map<String, String> imageByName,
+                                        Map<String, Object> balance) {
         Map<String, double[]> perItem = new LinkedHashMap<>(); // name -> [achetes, vendus, depense, gagneNet]
         double totalDepense = 0, totalGagneNet = 0, totalRetire = 0, totalFrais = 0;
 
@@ -278,7 +322,15 @@ public class SkinGap {
           .append(",\"totalFrais\":").append(global.totalFrais())
           .append(",\"benefice\":").append(global.benefice())
           .append(",\"nbTransactions\":").append(global.nbTransactions())
-          .append("},\"items\":[");
+          .append("}");
+        if (balance != null) {
+            sb.append(",\"balance\":{")
+              .append("\"current\":").append(asDouble(balance.get("current")))
+              .append(",\"pending\":").append(asDouble(balance.get("pending")))
+              .append(",\"held\":").append(asDouble(balance.get("held")))
+              .append("}");
+        }
+        sb.append(",\"items\":[");
         boolean first = true;
         for (ItemAccountStats it : items) {
             if (!first) sb.append(",");
@@ -429,6 +481,14 @@ public class SkinGap {
 
         HttpClient client = HttpClient.newHttpClient();
 
+        String clientId = System.getenv("SKINPORT_CLIENT_ID");
+        String clientSecret = System.getenv("SKINPORT_CLIENT_SECRET");
+        boolean hasCredentials = clientId != null && !clientId.isBlank() && clientSecret != null && !clientSecret.isBlank();
+        if (hasCredentials) {
+            AUTH_HEADER = "Basic " + Base64.getEncoder().encodeToString(
+                    (clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
+        }
+
         System.out.println("Récupération de l'historique des ventes (volume, toutes périodes)...");
         String jsonSales = fetchUrl(client, "https://api.skinport.com/v1/sales/history?app_id=730&currency=EUR");
         System.out.println("Récupération des prix actuels (avec trade-protect, pour le prix d'achat)...");
@@ -453,7 +513,11 @@ public class SkinGap {
                 Map<String, Object> item = (Map<String, Object>) o;
                 Object mhn = item.get("market_hash_name");
                 Object img = item.get("image");
-                if (mhn != null && img != null) imageByName.put((String) mhn, (String) img);
+                if (mhn == null || img == null) continue;
+                // Le catalogue a une entrée (et une image) par phase Doppler, champ "phase" —
+                // mêmes libellés que le champ "version" de Skinport (Phase 1, Ruby, ...).
+                imageByName.put(itemKey((String) mhn, item.get("phase")), (String) img);
+                imageByName.putIfAbsent((String) mhn, (String) img);
             }
             System.out.println("Catalogue d'images chargé (" + imageByName.size() + " entrées).");
         } catch (Exception e) {
@@ -464,7 +528,7 @@ public class SkinGap {
         Map<String, String> marketPageByName = new HashMap<>();
         for (Object o : salesList) {
             Map<String, Object> item = (Map<String, Object>) o;
-            String name = (String) item.get("market_hash_name");
+            String name = itemKey((String) item.get("market_hash_name"), item.get("version"));
             Map<String, Object> h24 = sub(item, "last_24_hours");
             Map<String, Object> h7 = sub(item, "last_7_days");
             Map<String, Object> h30 = sub(item, "last_30_days");
@@ -483,9 +547,15 @@ public class SkinGap {
         // y compris les items encore verrouillés qui sont souvent moins chers).
         // Marché global (§8, "G") : toutes les annonces, y compris sous trade-lock.
         Map<String, MarketStats> globalStats = new HashMap<>();
+        Map<String, String> versionByKey = new HashMap<>();
         for (Object o : itemsAllList) {
             Map<String, Object> item = (Map<String, Object>) o;
-            String name = (String) item.get("market_hash_name");
+            String name = itemKey((String) item.get("market_hash_name"), item.get("version"));
+            if (item.get("version") != null) versionByKey.put(name, String.valueOf(item.get("version")));
+            Object mp0 = item.get("market_page");
+            // La market_page des variantes contient déjà le filtre de phase (&phase=N) : on la
+            // préfère à celle de l'historique, au cas où celui-ci n'aurait pas l'entrée.
+            if (mp0 != null) marketPageByName.putIfAbsent(name, (String) mp0);
             Object min = item.get("min_price");
             if (min == null) continue;
             globalStats.put(name, new MarketStats(
@@ -506,7 +576,7 @@ public class SkinGap {
         Map<String, MarketStats> tradableStats = new HashMap<>();
         for (Object o : itemsTradableList) {
             Map<String, Object> item = (Map<String, Object>) o;
-            String name = (String) item.get("market_hash_name");
+            String name = itemKey((String) item.get("market_hash_name"), item.get("version"));
             Object min = item.get("min_price");
             if (min == null) continue;
             tradableStats.put(name, new MarketStats(
@@ -523,7 +593,11 @@ public class SkinGap {
         List<Result> results = new ArrayList<>();
         for (Map.Entry<String, Double> e : minWithLocked.entrySet()) {
             String name = e.getKey();
-            if (isDoppler(name)) continue; // exclu : phases mélangées, écart non pertinent
+            // Doppler : historiquement exclu car Skinport mélangeait toutes les phases sous le
+            // même nom. L'API renvoie désormais une entrée par phase (champ "version") : on garde
+            // donc les Doppler dont la phase est connue, et on n'exclut plus qu'une éventuelle
+            // entrée agrégée sans phase.
+            if (isDoppler(name) && !versionByKey.containsKey(name)) continue;
             Double askRaw = minTradable.get(name);
             // pas d'annonce tradable actuellement -> pas de prix de vente espéré calculable, on ignore
             if (askRaw == null) continue;
@@ -534,12 +608,14 @@ public class SkinGap {
             // sont envoyées telles quelles, le mode de calcul (auto / médiane / min listé) est
             // choisi côté client et peut être changé sans re-fetch.
             double weighted = weightedMedian(vol);
-            String image = imageByName.getOrDefault(name, "");
+            String baseName = name.contains(" [") ? name.substring(0, name.lastIndexOf(" [")) : name;
+            String image = imageByName.getOrDefault(name, imageByName.getOrDefault(baseName, ""));
             MarketStats tStats = tradableStats.getOrDefault(name, MarketStats.EMPTY);
             MarketStats gStats = globalStats.getOrDefault(name, MarketStats.EMPTY);
             PriceModelResult model = computePriceModel(vol, tStats, gStats);
 
-            results.add(new Result(name, mp, vol, e.getValue(), askRaw, weighted, image, tStats, gStats, model));
+            results.add(new Result(name, mp, vol, e.getValue(), askRaw, weighted, image, tStats, gStats, model,
+                    versionByKey.get(name)));
         }
         results.sort(Comparator.comparing(Result::name));
 
@@ -576,7 +652,16 @@ public class SkinGap {
                 .append(",\"liq\":").append(r.model().liquidity())
                 .append(",\"dis\":").append(r.model().disagreement())
                 .append(",\"trd\":").append(r.model().trend())
-                .append("}");
+                // Profondeur de marché : quantité listée immédiatement tradable (qt), quantité
+                // totale y compris trade-lock (qg, superset de qt) et médiane du marché tradable
+                // (tmed). Sert au "stock en jours" (qt / ventes par jour) côté dashboard.
+                .append(",\"qt\":").append((int) r.tradable().quantity())
+                .append(",\"qg\":").append((int) r.global().quantity())
+                .append(",\"tmed\":").append(r.tradable().median());
+            if (r.version() != null) {
+                data.append(",\"ver\":\"").append(jsonEscape(r.version())).append("\"");
+            }
+            data.append("}");
         }
         data.append("]");
 
@@ -604,14 +689,11 @@ public class SkinGap {
         // Stats de compte Skinport (achats/ventes/bénéfice) — nécessite SKINPORT_CLIENT_ID et
         // SKINPORT_CLIENT_SECRET (Repository secrets du repo GitHub Actions). Non bloquant :
         // si absents (ex. run local sans les secrets), on saute cette partie proprement.
-        String clientId = System.getenv("SKINPORT_CLIENT_ID");
-        String clientSecret = System.getenv("SKINPORT_CLIENT_SECRET");
-        if (clientId != null && !clientId.isBlank() && clientSecret != null && !clientSecret.isBlank()) {
+        if (hasCredentials) {
             System.out.println("Récupération des transactions du compte Skinport...");
-            String authHeader = "Basic " + Base64.getEncoder().encodeToString(
-                    (clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
-            List<Map<String, Object>> transactions = fetchAllTransactions(client, authHeader);
-            String accountJson = buildAccountStatsJson(transactions, imageByName);
+            List<Map<String, Object>> transactions = fetchAllTransactions(client, AUTH_HEADER);
+            Map<String, Object> balance = fetchBalance(client, AUTH_HEADER);
+            String accountJson = buildAccountStatsJson(transactions, imageByName, balance);
             Path accountOut = Path.of(outPath).resolveSibling("account-stats.json");
             Files.writeString(accountOut, accountJson);
             System.out.println("OK — " + transactions.size() + " transactions écrites dans " + accountOut);
@@ -716,7 +798,7 @@ public class SkinGap {
       <div class="wordmark">skin<span>gap</span></div>
       <div class="tagline">écart prix de vente espéré vs prix minimum listé (hors trade-protect) — __COUNT__ items — généré le __DATE__</div>
     </div>
-    <a class="navlink" href="http://89.168.59.90:8080/7d44209968490653cb6ffcd0d1e101eb/">→ dashboard</a>
+    <a class="navlink" id="dashLink" href="__DASHBOARD_URL__">→ dashboard</a>
   </header>
 
   <div class="notice">
@@ -812,6 +894,7 @@ public class SkinGap {
         <option value="exp_desc">Prix espéré (haut → bas)</option>
         <option value="vol_desc">Volume (haut → bas)</option>
         <option value="vol_asc">Volume (bas → haut)</option>
+        <option value="stock_asc">Jours de stock (bas → haut)</option>
         <option value="name_asc">Nom (A-Z)</option>
         <option value="name_desc">Nom (Z-A)</option>
         <option value="cat_asc">Catégorie (A-Z)</option>
@@ -842,6 +925,7 @@ public class SkinGap {
         <th>Item</th>
         <th class="num">Prix espéré</th>
         <th class="num">Volume</th>
+        <th class="num" title="Annonces immédiatement tradables (et, au survol, nombre de jours de ventes que ce stock représente au rythme actuel)">Stock</th>
         <th class="num">Min</th>
         <th class="num" title="Prix min avec trade-protect : indicatif, hors calculs">Min (TP)</th>
         <th class="num">Écart</th>
@@ -866,7 +950,10 @@ let PAGE_LAST_MODIFIED = null;
 fetch(location.pathname, { method: "HEAD", cache: "no-store" })
   .then(r => { PAGE_LAST_MODIFIED = r.headers.get("Last-Modified"); })
   .catch(() => {});
-const DASHBOARD_URL = "http://89.168.59.90:8080/7d44209968490653cb6ffcd0d1e101eb/";
+// Injecté par le workflow (secret DASHBOARD_URL) : ne JAMAIS remettre l'URL en dur ici, le
+// dépôt est public et l'URL contient le segment secret qui protège le dashboard.
+// Normalisé avec un "/" final, quelle que soit la forme du secret.
+const DASHBOARD_URL = "__DASHBOARD_URL__".replace(/\\/?$/, "/");
 const ALERTS_API = DASHBOARD_URL + "api/alerts";
 const PRICEDROPS_API = DASHBOARD_URL + "api/pricedrops";
 const EVENTS_URL = DASHBOARD_URL + "events";
@@ -1037,6 +1124,13 @@ function dailyRate(it) {
   return 0;
 }
 
+// Nombre de jours de ventes que représente le stock tradable actuel ; null si pas de ventes.
+function stockDays(it) {
+  const dr = dailyRate(it);
+  if (it.qt === undefined || dr <= 0) return null;
+  return it.qt / dr;
+}
+
 function rawExpectedOf(it) {
   if (overrides[it.n] !== undefined) return { raw: overrides[it.n], usedMedian: false };
   const hasWm = it.wm !== null && it.wm !== undefined && it.wm > 0;
@@ -1094,6 +1188,7 @@ function computeRows() {
     case "exp_desc": rows.sort((a,b) => b.med - a.med); break;
     case "vol_desc": rows.sort((a,b) => (b.vol ?? 0) - (a.vol ?? 0)); break;
     case "vol_asc": rows.sort((a,b) => (a.vol ?? 0) - (b.vol ?? 0)); break;
+    case "stock_asc": rows.sort((a,b) => (stockDays(a.it) ?? Infinity) - (stockDays(b.it) ?? Infinity)); break;
     case "name_desc": rows.sort((a,b) => b.it.n.localeCompare(a.it.n)); break;
     case "cat_asc": rows.sort((a,b) => catOf(a.it).localeCompare(catOf(b.it)) || a.it.n.localeCompare(b.it.n)); break;
     default: rows.sort((a,b) => a.it.n.localeCompare(b.it.n)); // name_asc
@@ -1179,6 +1274,28 @@ function render() {
     tdVol.className = "num";
     tdVol.textContent = (r.vol ?? "-");
     tr.appendChild(tdVol);
+
+    // Stock tradable + "jours de stock" (stock / ventes par jour) : plus c'est bas, plus la
+    // revente sera rapide (peu de concurrence pour beaucoup d'acheteurs). Absent des anciens
+    // skins.json -> "-".
+    const tdStock = document.createElement("td");
+    tdStock.className = "num";
+    if (r.it.qt !== undefined) {
+      tdStock.textContent = r.it.qt;
+      const dr = dailyRate(r.it);
+      const days = stockDays(r.it);
+      if (days !== null) {
+        tdStock.title = days.toFixed(1) + " jour(s) de ventes au rythme actuel (" + dr.toFixed(2) + " vente/j)"
+          + (r.it.qg > r.it.qt ? " · " + r.it.qg + " annonces au total, trade-lock inclus" : "");
+        if (days > 30) tdStock.style.color = "var(--negative)";
+        else if (days < 3) tdStock.style.color = "var(--positive)";
+      } else {
+        tdStock.title = "Aucune vente sur 90 jours";
+      }
+    } else {
+      tdStock.textContent = "-";
+    }
+    tr.appendChild(tdStock);
 
     const tdAsk = document.createElement("td");
     tdAsk.className = "num";

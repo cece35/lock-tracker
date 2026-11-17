@@ -1,12 +1,26 @@
 name: push-skingap
 
 on:
-  # Déclenchement manuel (bouton "Run workflow" dans l'onglet Actions du repo).
+  # Déclencheur PRINCIPAL : appel API "workflow_dispatch" envoyé toutes les 5 min par
+  # cron-job.org (POST https://api.github.com/repos/cece35/lock-tracker/actions/workflows/push-skingap.yml/dispatches
+  # avec body {"ref":"main"} et un token GitHub fine-grained "Actions: read & write" sur ce repo).
+  # C'est la seule méthode fiable : voir plus bas pourquoi le "schedule" ne suffit pas.
   workflow_dispatch:
 
-  # Toutes les 5 min, décalé de 2 min pour éviter les créneaux ronds surchargés
+  # Filet de sécurité UNIQUEMENT (si cron-job.org tombe). GitHub ne garantit pas les
+  # "schedule" : en charge, les exécutions sont retardées de 10-60 min ou purement
+  # abandonnées — constaté sur ce repo : 13 exécutions en 3 jours pour un cron "toutes les
+  # 5 min" (au lieu de ~860). Inutile donc de le remettre à 5 min : une fois par heure suffit
+  # pour un fallback, et évite de doubler les appels à l'API Skinport.
   schedule:
-    - cron: "2-59/5 * * * *"
+    - cron: "17 * * * *"
+
+# Jamais deux générations en parallèle (dispatch cron-job.org + fallback, ou relance manuelle) :
+# l'API Skinport limite /v1/items + /v1/sales/history à 8 requêtes / 5 min, et chaque requête
+# envoyée pendant un blocage 429 le prolonge d'une fenêtre complète. La suivante attend.
+concurrency:
+  group: push-skingap
+  cancel-in-progress: false
 
 jobs:
   push-skingap:
@@ -50,9 +64,12 @@ jobs:
           FILES="skingap.html skins.json"
           [ -f account-stats.json ] && FILES="$FILES account-stats.json"
 
-          scp -i ~/.ssh/id_ed25519 $FILES \
+          # ConnectTimeout : un VM qui ne répond pas faisait pendre le job jusqu'au
+          # timeout-minutes (exécutions "cancelled"/"failure" à l'étape d'envoi).
+          SSH_OPTS="-i $HOME/.ssh/id_ed25519 -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
+          scp $SSH_OPTS $FILES \
             "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}:~/"
-          ssh -i ~/.ssh/id_ed25519 "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" '
+          ssh $SSH_OPTS "${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}" '
             sudo mv ~/skingap.html /opt/tradelock/server/static/skingap.html &&
             sudo mv ~/skins.json /opt/tradelock/server/static/skins.json &&
             if [ -f ~/account-stats.json ]; then
