@@ -703,3 +703,64 @@ La qualité du modèle est plus importante que sa simplicité.
 
 Ne pas simplement reprendre les coefficients proposés ici.
 Proposer la meilleure méthode statistique possible avec les informations réellement disponibles, sans inventer de données que l'API ne fournit pas.
+
+---
+
+# Implémentation actuelle — prix « Très rapide » v2 (novembre 2026)
+
+Objectif : le prix auquel l'item **se vend en 24-48 h**, calculé toutes les 5 minutes par
+`FastSellModel` (`SkinGap.java`) et exporté dans `skins.json` :
+
+| champ | sens |
+|---|---|
+| `xf` | prix brut conseillé (avant commission Skinport) |
+| `xl` | ventes par jour estimées (λ) |
+| `xp` | probabilité estimée de vente sous 48 h à ce prix |
+| `xm` | branche du calcul (`target`, `best-effort`, `+cap`, `no-sales`) |
+
+Le site (mode « Très rapide »), la page détail et le flux live du serveur utilisent `xf`.
+L'extension doit lire `xf` dans `skins.json`, ou recalculer avec `fast-price.js` (portage
+JavaScript exact, vérifié identique au centime sur tous les items).
+
+## Ce que les données réelles ont montré
+
+Mesures faites le 17/11/2026 sur le flux live Skinport (WebSocket officiel : chaque annonce et
+chaque vente en temps réel) croisé avec une photo de l'API REST prise au même instant :
+
+1. **Deux files d'attente séparées.** Les ventes d'items tradables se font au min tradable `L`
+   (écart médian 0,0 %), celles d'items sous trade-lock au min verrouillé `G` (~10 % moins cher).
+   L'historique REST mélange les deux.
+2. **Le rythme de ventes λ** estimé par fenêtres disjointes pondérées par récence prédit bien les
+   ventes observées sur les skins (104 attendues / 96 observées). L'ancien taux (ventes 24 h,
+   sinon 7 j / 7…) surestimait d'environ 33 %.
+3. **La tête de file tradable est achetée à un rythme λ·A(r)**, où r = prix / médiane des prix
+   payés récemment. A diminue quand le prix monte au-dessus de la médiane (élasticité-prix),
+   mais baisser sous ~0,89 × médiane n'accélère plus la vente.
+4. **Être doublé** par une annonce moins chère est rare tant que le prix est proche de la médiane.
+
+## Calcul
+
+1. λ et la médiane récente `med` : fenêtres 24 h / 7 j / 30 j / 90 j redécoupées en périodes
+   disjointes, pondérées par ancienneté (demi-vie adaptative), mélange de lois log-normales.
+2. Probabilité de vente sous 48 h au prix P : `1 − exp(−2 · λ · A(P / med))`.
+3. Prix = le plus haut qui atteint 80 % de chances sous 48 h ; si c'est impossible (item trop
+   peu liquide), le prix qui donne la meilleure chance réelle (`best-effort`, probabilité < 80 %
+   affichée) ; jamais au-dessus du min tradable − 1 centime.
+
+## Paramètres et validation
+
+`A(r) = 0,80` si `r ≤ 0,89`, sinon `0,80 · (r / 0,89)^-3,0` ; taux d'achat = `λ^0,8 · A(r)`.
+Ajustés par maximum de vraisemblance sur 1 h 10 de flux live (149 achats de têtes de file
+tradables, ~12 000 skins suivis), validés hors échantillon (ajustement sur la 1re moitié,
+meilleure prédiction de la 2e moitié qu'un taux constant). Contrôle de calibration : 151,7 achats
+prédits pour 149 observés, et accord par tranche de liquidité et de prix.
+
+Effet par rapport à l'ancien calcul (skins, modèle calibré) : pour 1,2 à 2 ventes/jour, la part
+d'items qui se vendent sous 48 h avec ≥ 80 % de chances passe de 28 % à 100 % ; pour les items
+liquides le prix reste « min − 1 centime » ; pour les items lents la probabilité affichée dit
+honnêtement que 48 h est hors d'atteinte. L'ancien « −0,1 % sous le min » était arrondi au
+centime : sous 5 € il retombait exactement sur le min et ne passait jamais devant.
+
+Limites : calibré sur un créneau de soirée (Europe) ; les items empilables (caisses, stickers)
+ne passent pas par le flux live et n'ont pas pu être vérifiés (pour eux le prix vaut presque
+toujours min − 1 centime) ; à recalibrer de temps en temps (même méthode : flux live + photo REST).
