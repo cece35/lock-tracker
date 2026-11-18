@@ -717,6 +717,9 @@ Objectif : le prix auquel l'item **se vend en 24-48 h**, calculé toutes les 5 m
 | `xl` | ventes par jour estimées (λ) |
 | `xp` | probabilité estimée de vente sous 48 h à ce prix |
 | `xm` | branche du calcul (`target`, `best-effort`, `+cap`, `no-sales`) |
+| `xb` | prix de revente si l'on achète le Min tradable lui-même (plafond : 2e annonce tradable) |
+| `xbp` | probabilité de vente sous 48 h au prix `xb` |
+| `l2` | prix de la 2e annonce tradable (seulement à 2 ou 3 annonces, où l'API le donne exactement) |
 
 Le site (mode « Très rapide »), la page détail et le flux live du serveur utilisent `xf`.
 L'extension doit lire `xf` dans `skins.json`, ou recalculer avec `fast-price.js` (portage
@@ -745,7 +748,40 @@ chaque vente en temps réel) croisé avec une photo de l'API REST prise au même
 2. Probabilité de vente sous 48 h au prix P : `1 − exp(−2 · λ · A(P / med))`.
 3. Prix = le plus haut qui atteint 80 % de chances sous 48 h ; si c'est impossible (item trop
    peu liquide), le prix qui donne la meilleure chance réelle (`best-effort`, probabilité < 80 %
-   affichée) ; jamais au-dessus du min tradable − 1 centime.
+   affichée) ; jamais au-dessus de l'annonce tradable concurrente − 1 centime (voir ci-dessous).
+
+## Quel concurrent plafonne la revente ? (correctif du 18/11/2026)
+
+L'annonce qu'on achète ne peut pas servir de plafond à sa propre revente. Le plafond dépend donc
+de ce qu'on achète :
+
+| on achète… | concurrent après l'achat | champ |
+|---|---|---|
+| une offre trade-protect moins chère que le Min tradable (achetée à son déblocage) | le Min tradable | `xf` |
+| un item qu'on a déjà (dashboard) | le Min tradable | `xf` |
+| le Min tradable lui-même | la **2e** annonce tradable | `xb` |
+
+L'API (`/v1/items`) ne donne que min / médiane / moyenne / max / quantité : la 2e annonce est
+connue exactement à 2 annonces (= max) et à 3 annonces (= médiane). Avec une seule annonce
+tradable, il ne reste aucun concurrent : le prix est borné au 90e centile des prix payés
+récemment. Au-delà de 3 annonces, la 2e annonce est inconnue et `xb` est absent : on garde `xf`
+(plafond sous le Min, prudent).
+
+Conséquence, vérifiée sur une photo complète du marché (18/11/2026, 24 927 items) : en achetant le
+Min tradable, l'écart « Très rapide » ne peut être positif que si la 2e annonce est nettement plus
+chère. C'est arrivé sur 63 items, tous très peu liquides (aucun avec ≥ 50 % de chances de vente
+sous 48 h). Côté tradable, le marché ne laisse donc pas d'annonce sous son prix de revente rapide.
+Les écarts positifs viennent des offres trade-protect : 581 items en avaient une sous le prix net
+de revente rapide, dont 363 avec ≥ 50 % de chances de vente sous 48 h. Sur la page, le sélecteur
+« Achat » choisit le prix d'achat : « Min tradable » (achetable maintenant, par défaut) ou
+« Min (TP) » (offre trade-protect, achetable à son déblocage).
+
+**Bug corrigé le même jour :** l'appel « tradable » de l'API n'avait pas `tradable=true`. Or
+sans ce paramètre l'API renvoie toutes les annonces, trade-protect compris. Le « Min tradable »
+était donc le min trade-protect compris : `Min` et `Min (TP)` étaient identiques pour tous les
+items, et le prix « Très rapide » était plafonné sous l'offre trade-protect au lieu du Min
+tradable. 19 % des items étaient concernés (offre TP ~9,5 % moins chère) ; sur 1 845 d'entre eux,
+le prix était trop bas (médiane −6,7 %, P90 −26 %).
 
 ## Paramètres et validation
 
