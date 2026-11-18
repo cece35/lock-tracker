@@ -105,8 +105,8 @@ public class SkinGap {
     // Statistiques agrégées d'un marché Skinport (/v1/items) pour un market_hash_name donné.
     // "T" (tradable=true, immédiatement disponible) ou "G" (tradable=false, superset incluant
     // le trade-lock) selon la liste d'origine — voir prompt_prix_revente_skinport_corrige.md §1.
-    record MarketStats(double min, double median, double mean, double quantity, double suggested) {
-        static final MarketStats EMPTY = new MarketStats(0, 0, 0, 0, 0);
+    record MarketStats(double min, double median, double mean, double quantity, double suggested, double max) {
+        static final MarketStats EMPTY = new MarketStats(0, 0, 0, 0, 0, 0);
     }
 
     // Sortie du modèle de prix de revente (voir prompt_prix_revente_skinport_corrige.md).
@@ -122,7 +122,7 @@ public class SkinGap {
 
     record Result(String name, String marketPage, SalesVolumes volumes, double minWithLocked, double askRaw,
                   double medianRaw, String image, MarketStats tradable, MarketStats global, PriceModelResult model,
-                  String version, FastPrice fast) {}
+                  String version, FastPrice fast, FastPrice fastBuy, Double secondTradable) {}
 
     // Clé d'un item Skinport. Depuis l'ajout du champ "version" à l'API (/v1/items,
     // /v1/sales/history, /v1/sales/out-of-stock), un même market_hash_name peut apparaître
@@ -463,8 +463,10 @@ public class SkinGap {
     //
     // Calcul : P(vendu sous 48 h au prix P) = 1 - exp(-2 · λ · A(P / médiane)). On prend le prix le
     // plus haut qui atteint 80 % (≈ 55 % sous 24 h) ; si c'est impossible même à R_LO·médiane, on
-    // garde R_LO·médiane (meilleure chance réelle, probabilité affichée) ; jamais au-dessus du min
-    // tradable - 1 centime (une annonce moins chère passerait avant).
+    // garde R_LO·médiane (meilleure chance réelle, probabilité affichée) ; jamais au-dessus du
+    // concurrent tradable - 1 centime (une annonce moins chère passerait avant). Le concurrent dépend
+    // de ce qu'on revend : le Min tradable pour un item déjà possédé ou une offre trade-protect
+    // achetée à son déblocage ("xf") ; la 2e annonce tradable si l'on achète le Min lui-même ("xb").
     //
     // λ et la médiane viennent des 4 fenêtres Skinport (24 h / 7 j / 30 j / 90 j), qui se
     // RECOUVRENT : on les redécoupe en périodes disjointes (0-1 j, 1-7 j, 7-30 j, 30-90 j) pondérées
@@ -490,8 +492,9 @@ public class SkinGap {
 
     // price = prix brut conseillé (0 si incalculable), lambda = ventes/jour estimées,
     // prob48h = probabilité estimée de vente sous 48 h à ce prix, mode = branche du calcul.
-    record FastPrice(double price, double lambda, double prob48h, String mode) {
-        static final FastPrice NONE = new FastPrice(0, 0, 0, "none");
+    // salesMedian = prix "typique" des dernières ventes (médiane pondérée par récence, 0 si aucune).
+    record FastPrice(double price, double lambda, double prob48h, String mode, double salesMedian) {
+        static final FastPrice NONE = new FastPrice(0, 0, 0, "none", 0);
     }
 
     static final class FastSellModel {
@@ -504,17 +507,26 @@ public class SkinGap {
         static final double N_MIN = 4.0;          // ventes "effectives" minimum avant d'élargir
         static final double SIGMA0 = 0.06;        // dispersion a priori des prix de vente (log)
         static final double K_PRIOR = 2.0;        // poids de l'a priori, en nombre de ventes
-        // Acceptation MESURÉE (flux live, 17/11/2026, 149 achats de têtes de file sur ~12 000 skins) :
-        // une annonce TRADABLE en tête de file (moins chère que toutes les autres annonces tradables)
-        // au prix P est achetée au taux λ^LAMBDA_EXP · A(r), r = P / médiane des prix payés récemment :
-        //     A(r) = A_MAX                      si r <= R_LO   (baisser davantage n'accélère plus)
-        //     A(r) = A_MAX · (r / R_LO)^(-B)    sinon          (élasticité-prix B, IC 95 % [1,4 ; 4,6])
+        // Acceptation MESURÉE : une annonce TRADABLE en tête de file (moins chère que toutes les autres
+        // annonces tradables) au prix P est achetée au taux λ^LAMBDA_EXP · A(r), r = P / médiane des
+        // prix payés récemment :
+        //     A(r) = aMax                     si r <= rLo   (baisser davantage n'accélère plus)
+        //     A(r) = aMax · (r / rLo)^(-b)    sinon         (élasticité-prix b)
+        // Recalibré le 18/11/2026 sur une JOURNÉE entière (photo complète du marché, puis ventes des 24 h
+        // suivantes, 17 903 items, 1 705 ventes ; validé hors échantillon) : la 1re calibration (1 h 10
+        // de flux live en soirée, aMax 0,80 / rLo 0,89 / b 3,0) surestimait les ventes d'environ 50 %.
+        // Deux familles : les stickers et caisses réagissent beaucoup moins au prix que les skins.
         // LAMBDA_EXP < 1 : sur les items très liquides, plus de concurrence en tête de file.
-        static final double A_MAX = 0.80;
-        static final double R_LO = 0.89;
-        static final double B = 3.0;
+        record Params(double aMax, double rLo, double b) {}
+        // skins d'armes, couteaux, gants, charms, agents, music kits... : IC 95 % rLo [0,91 ; 0,96], b [3 ; 4]
+        static final Params SKINS = new Params(0.40, 0.94, 3.25);
+        // stickers et caisses (rLo borné à 0,85 : sans borne il partirait vers 0,3, ce qui brade l'item)
+        static final Params STACK = new Params(0.21, 0.85, 1.5);
         static final double LAMBDA_EXP = 0.80;
         static final double NO_SALES_DISCOUNT = 0.20;  // aucune vente sur 90 j
+        // Plus AUCUNE annonce tradable après l'achat (le Min était la seule) : pas de concurrent pour
+        // plafonner, on borne au 90e centile des prix payés récemment au lieu d'extrapoler A(r).
+        static final double Q_CEIL = 0.90;
 
         static double erfc(double x) { // Numerical Recipes erfcc, erreur relative < 1.2e-7
             double z = Math.abs(x);
@@ -580,13 +592,59 @@ public class SkinGap {
 
         static double floorCents(double p) { return Math.max(TICK, Math.floor(p * 100 + 1e-9) / 100); }
 
-        static double accept(double r) {
-            return r <= R_LO ? A_MAX : A_MAX * Math.pow(r / R_LO, -B);
+        // Famille de paramètres d'après la catégorie de la page marché ("...&cat=Sticker" ou
+        // ".../market/sticker?...") ; tout ce qui n'est ni sticker ni caisse prend SKINS.
+        static Params paramsFor(String marketPage) {
+            String cat = "";
+            if (marketPage != null) {
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("[?&]cat=([^&]+)|/market/([^/?&]+)").matcher(marketPage);
+                if (m.find()) cat = (m.group(1) != null ? m.group(1) : m.group(2)).toLowerCase(Locale.ROOT);
+            }
+            return (cat.equals("sticker") || cat.equals("container")) ? STACK : SKINS;
+        }
+
+        static double accept(double r, Params pr) {
+            return r <= pr.rLo() ? pr.aMax() : pr.aMax() * Math.pow(r / pr.rLo(), -pr.b());
         }
 
         /** L = min tradable (annonces achetables tout de suite), G = min toutes annonces (trade-lock inclus). */
-        static FastPrice compute(SalesWindows s, double L, double G) {
+        // Prix "Très rapide" dans le marché actuel : il faut passer sous le Min tradable L (1 centime
+        // en dessous). C'est le bon prix pour revendre un item qui n'est PAS cette annonce : item
+        // déjà en inventaire, ou offre trade-protect achetée à son déblocage (absente du marché
+        // tradable, elle ne retire pas L).
+        static FastPrice compute(SalesWindows s, double L, double G, Params pr) {
             if (!(L > 0)) return FastPrice.NONE;
+            return price(s, L - TICK, G > 0 ? Math.min(G, L) : L, false, pr);
+        }
+
+        // Prix "Très rapide" pour qui ACHÈTE l'annonce tradable la moins chère (L) : une fois achetée
+        // elle ne fait plus concurrence, la revente doit seulement passer sous la 2e annonce tradable
+        // L2. Sans ça, l'annonce achetée servirait de plafond à sa propre revente et l'écart serait
+        // toujours négatif (≤ -8 % après commission). L'API ne donne que min / médiane / moyenne /
+        // max / quantité, ce qui fixe L2 exactement jusqu'à 3 annonces (voir secondTradable) ; avec
+        // une seule annonce il n'y a plus de concurrent tradable (plafond Q_CEIL). null si L2 est
+        // inconnu (plus de 3 annonces) : l'appelant garde alors compute(), plafonné sous L (prudent).
+        static FastPrice computeAfterBuyingFront(SalesWindows s, double L, double G, MarketStats t, Params pr) {
+            if (!(L > 0)) return null;
+            double front = G > 0 ? Math.min(G, L) : L;
+            if (Math.round(t.quantity()) == 1) return price(s, Double.POSITIVE_INFINITY, front, true, pr);
+            Double l2 = secondTradable(t);
+            return l2 == null ? null : price(s, l2 - TICK, front, false, pr);
+        }
+
+        // 2e prix tradable le plus bas quand l'API le donne exactement : 2 annonces -> max_price,
+        // 3 annonces -> median_price (vérifié le 18/11/2026 : médiane = moyenne des deux prix à 2
+        // annonces, valeur du milieu à 3). null sinon (1 annonce, plus de 3, ou données incohérentes).
+        static Double secondTradable(MarketStats t) {
+            long q = Math.round(t.quantity());
+            double l2 = q == 2 ? t.max() : q == 3 ? t.median() : Double.NaN;
+            return (l2 > 0 && l2 >= t.min()) ? l2 : null;
+        }
+
+        // Cœur du calcul. cap = prix maximum (1 centime sous le concurrent tradable, +∞ s'il n'y en a
+        // pas) ; front = référence de la branche "aucune vente" ; ceilQ = borne au centile Q_CEIL.
+        private static FastPrice price(SalesWindows s, double cap, double front, boolean ceilQ, Params pr) {
             double[] n = s.n();
             double[] c = {n[0], Math.max(0, n[1] - n[0]), Math.max(0, n[2] - n[1]), Math.max(0, n[3] - n[2])};
             double[] w = new double[4];
@@ -616,36 +674,38 @@ public class SkinGap {
                 tot += beta[k];
                 comps.add(wd);
             }
-            double cap = L - TICK;
             if (comps.isEmpty() || tot <= 0) {
                 // Aucune vente sur 90 jours : rien ne garantit une vente en 48 h ; seule une forte
                 // décote sous la tête de file peut attirer un acheteur opportuniste.
-                double front = (G > 0 ? Math.min(G, L) : L);
-                return new FastPrice(floorCents(Math.min(cap, front * (1 - NO_SALES_DISCOUNT))), 0, 0, "no-sales");
+                return new FastPrice(floorCents(Math.min(cap, front * (1 - NO_SALES_DISCOUNT))), 0, 0, "no-sales", 0);
             }
             for (double[] cp : comps) cp[0] /= tot;
 
             double med = Math.exp(quantile(0.5, comps));   // prix "typique" récent (pondéré par récence)
             double xStar = -Math.log(1 - TARGET_PROB);       // nb moyen d'achats requis sur l'horizon
             double lamEff = Math.pow(lambda, LAMBDA_EXP);
-            double xMax = HORIZON_DAYS * lamEff * A_MAX;     // ... et le maximum atteignable (prix <= R_LO·med)
+            double xMax = HORIZON_DAYS * lamEff * pr.aMax(); // ... et le maximum atteignable (prix <= rLo·med)
             double r;
             String mode;
-            if (B <= 0) {
+            if (pr.b() <= 0) {
                 r = Double.POSITIVE_INFINITY;                // pas d'effet prix : la tête de file suffit
                 mode = "front";
             } else if (xMax >= xStar) {
-                r = R_LO * Math.pow(xMax / xStar, 1 / B);    // plus haut prix qui atteint la cible
+                r = pr.rLo() * Math.pow(xMax / xStar, 1 / pr.b()); // plus haut prix qui atteint la cible
                 mode = "target";
             } else {
-                r = R_LO;                                    // cible inatteignable : meilleure chance réelle
+                r = pr.rLo();                                // cible inatteignable : meilleure chance réelle
                 mode = "best-effort";
             }
             double p = med * r;
+            if (ceilQ) {
+                double q = Math.exp(quantile(Q_CEIL, comps));
+                if (p > q) { p = q; mode += "+q90"; }
+            }
             if (p >= cap) { p = cap; mode += "+cap"; }
             p = floorCents(p);
-            double prob = 1 - Math.exp(-HORIZON_DAYS * lamEff * accept(p / med));
-            return new FastPrice(p, lambda, prob, mode);
+            double prob = 1 - Math.exp(-HORIZON_DAYS * lamEff * accept(p / med, pr));
+            return new FastPrice(p, lambda, prob, mode, med);
         }
     }
 
@@ -697,7 +757,11 @@ public class SkinGap {
         System.out.println("Récupération des prix actuels (avec trade-protect, pour le prix d'achat)...");
         String jsonItemsAll = fetchUrl(client, "https://api.skinport.com/v1/items?app_id=730&currency=EUR&tradable=false");
         System.out.println("Récupération des prix actuels (tradable uniquement, pour le prix de vente espéré)...");
-        String jsonItemsTradable = fetchUrl(client, "https://api.skinport.com/v1/items?app_id=730&currency=EUR");
+        // tradable=true est INDISPENSABLE : sans ce paramètre l'API applique sa valeur par défaut
+        // (false) et renvoie toutes les annonces, trade-protect compris — exactement comme l'appel
+        // précédent. Jusqu'au 18/11/2026 le "Min tradable" était donc en fait le min trade-protect
+        // inclus (Min et Min (TP) identiques sur tous les items, 19 % des items concernés).
+        String jsonItemsTradable = fetchUrl(client, "https://api.skinport.com/v1/items?app_id=730&currency=EUR&tradable=true");
 
         List<Object> salesList = (List<Object>) new JsonParser(jsonSales).parse();
         List<Object> itemsAllList = (List<Object>) new JsonParser(jsonItemsAll).parse();
@@ -768,7 +832,8 @@ public class SkinGap {
                     item.get("median_price") != null ? (Double) item.get("median_price") : 0,
                     item.get("mean_price") != null ? (Double) item.get("mean_price") : 0,
                     item.get("quantity") != null ? (Double) item.get("quantity") : 0,
-                    item.get("suggested_price") != null ? (Double) item.get("suggested_price") : 0
+                    item.get("suggested_price") != null ? (Double) item.get("suggested_price") : 0,
+                    item.get("max_price") != null ? (Double) item.get("max_price") : 0
             ));
         }
         Map<String, Double> minWithLocked = new HashMap<>();
@@ -789,7 +854,8 @@ public class SkinGap {
                     item.get("median_price") != null ? (Double) item.get("median_price") : 0,
                     item.get("mean_price") != null ? (Double) item.get("mean_price") : 0,
                     item.get("quantity") != null ? (Double) item.get("quantity") : 0,
-                    item.get("suggested_price") != null ? (Double) item.get("suggested_price") : 0
+                    item.get("suggested_price") != null ? (Double) item.get("suggested_price") : 0,
+                    item.get("max_price") != null ? (Double) item.get("max_price") : 0
             ));
         }
         Map<String, Double> minTradable = new HashMap<>();
@@ -819,10 +885,16 @@ public class SkinGap {
             MarketStats gStats = globalStats.getOrDefault(name, MarketStats.EMPTY);
             PriceModelResult model = computePriceModel(vol, tStats, gStats);
 
-            FastPrice fast = FastSellModel.compute(windowsByName.getOrDefault(name, SalesWindows.EMPTY),
-                    askRaw, e.getValue());
+            SalesWindows windows = windowsByName.getOrDefault(name, SalesWindows.EMPTY);
+            // xf : revente au marché actuel (concurrent = Min tradable) — c'est le bon prix pour une
+            // offre trade-protect achetée à son déblocage (elle n'est pas dans le marché tradable) et
+            // pour un item déjà en inventaire. xb : revente si on achète le Min tradable lui-même
+            // (concurrent = 2e annonce tradable), seulement quand l'API permet de la connaître.
+            FastSellModel.Params fastParams = FastSellModel.paramsFor(mp);
+            FastPrice fast = FastSellModel.compute(windows, askRaw, e.getValue(), fastParams);
+            FastPrice fastBuy = FastSellModel.computeAfterBuyingFront(windows, askRaw, e.getValue(), tStats, fastParams);
             results.add(new Result(name, mp, vol, e.getValue(), askRaw, weighted, image, tStats, gStats, model,
-                    versionByKey.get(name), fast));
+                    versionByKey.get(name), fast, fastBuy, FastSellModel.secondTradable(tStats)));
         }
         results.sort(Comparator.comparing(Result::name));
 
@@ -870,7 +942,16 @@ public class SkinGap {
                 .append(",\"xf\":").append(r.fast().price())
                 .append(",\"xl\":").append(Math.round(r.fast().lambda() * 1000) / 1000.0)
                 .append(",\"xp\":").append(Math.round(r.fast().prob48h() * 1000) / 1000.0)
-                .append(",\"xm\":\"").append(r.fast().mode()).append("\"");
+                .append(",\"xm\":\"").append(r.fast().mode()).append("\"")
+                // Prix typique des dernières ventes (médiane pondérée par récence) sur lequel repose le calcul.
+                .append(",\"xs\":").append(Math.round(r.fast().salesMedian() * 100) / 100.0);
+            // Revente "Très rapide" si l'on achète le Min tradable lui-même (xb, proba xbp) :
+            // présent seulement quand la 2e annonce tradable est connue (<= 3 annonces) ; l2 = son prix.
+            if (r.fastBuy() != null) {
+                data.append(",\"xb\":").append(r.fastBuy().price())
+                    .append(",\"xbp\":").append(Math.round(r.fastBuy().prob48h() * 1000) / 1000.0);
+            }
+            if (r.secondTradable() != null) data.append(",\"l2\":").append(r.secondTradable());
             if (r.version() != null) {
                 data.append(",\"ver\":\"").append(jsonEscape(r.version())).append("\"");
             }
@@ -1009,7 +1090,7 @@ public class SkinGap {
   <header>
     <div>
       <div class="wordmark">skin<span>gap</span></div>
-      <div class="tagline">écart prix de vente espéré vs prix minimum listé (hors trade-protect) — __COUNT__ items — généré le __DATE__</div>
+      <div class="tagline">écart prix de vente espéré vs prix d'achat (Min tradable ou offre trade-protect) — __COUNT__ items — généré le __DATE__</div>
     </div>
     <a class="navlink" id="dashLink" href="__DASHBOARD_URL__">→ dashboard</a>
   </header>
@@ -1020,16 +1101,24 @@ public class SkinGap {
     l'usure (<code>exterior=</code>) et StatTrak™/Souvenir détectés automatiquement depuis le nom.<br>
     <b>Prix de vente espéré :</b> calculé selon le mode choisi dans "Mode prix" (l'extension doit lire le
     champ <code>xf</code> de skins.json pour avoir le même "Très rapide") —
-    <b>Très rapide</b> (par défaut) : le prix le plus haut qui laisse ~80 % de chances de vendre sous 48 h
-    (~55 % sous 24 h), estimé à partir du rythme de ventes récent et des prix réellement payés ces derniers
-    jours, jamais au-dessus du min tradable − 1 centime (probabilité et rythme au survol du prix) ;
+    <b>Très rapide</b> (par défaut) : part des <i>dernières ventes</i> (prix typique pondéré par récence et
+    nombre de ventes par jour) et prend le prix le plus haut qui laisse ~80 % de chances de vendre sous
+    48 h, d'après une calibration sur une journée entière de ventes réelles ; si c'est hors d'atteinte
+    (item peu liquide), le prix qui donne la meilleure chance, avec sa probabilité. Si une annonce tradable
+    concurrente est moins chère, on passe 1 centime dessous, sinon elle se vend avant : mesuré sur 24 h,
+    quand le Min est sous les ventes passées, les ventes du lendemain se font au niveau du Min, pas des
+    ventes passées. Le concurrent est la <i>2e</i> annonce tradable si l'on achète le Min (connue jusqu'à
+    3 annonces ; au-delà, prudence : plafond sous le Min), le Min tradable si l'on achète une offre
+    trade-protect (détail au survol du prix) ;
     <b>Auto</b> : prix min listé, sauf si la médiane
     pondérée lui est <i>inférieure</i> (affiché avec <span style="color:var(--accent)">Ⓜ</span>) ;
     <b>Médiane</b> : toujours la médiane pondérée (prix min listé si aucune vente) ; <b>Min listé</b> :
     toujours le prix min listé. Le prix net après commission Skinport (8% si &lt;1000€, 6% si ≥1000€) est
     celui utilisé pour l'écart ; le prix brut est affiché entre parenthèses, à titre indicatif.
-    <b>Écart</b> = prix de vente net − <b>Min</b> (prix minimum listé tradable, hors trade-protect). La colonne
-    <b>Min (TP)</b> (avec trade-protect) n'est qu'un indicateur : elle n'entre dans aucun calcul.
+    <b>Écart</b> = prix de vente net − prix d'achat, choisi dans "Achat" : <b>Min tradable</b> (par défaut :
+    annonce hors trade-protect, achetable maintenant) ou <b>Min (TP)</b> (offre la moins chère, trade-protect
+    compris, achetable à son déblocage). La colonne <b>Min (TP)</b> est surlignée quand une offre
+    trade-protect est moins chère que le Min tradable.
   </div>
 
   <div class="controls">
@@ -1047,7 +1136,7 @@ public class SkinGap {
       <input type="number" id="minVol" min="0" step="1" value="0" style="width:56px">
     </div>
     <div class="grp">
-      <span class="lbl">Prix (TP) :</span>
+      <span class="lbl">Prix d'achat :</span>
       <input type="number" id="priceMin" min="0" step="0.01" placeholder="min" style="width:64px">
       <span class="lbl">–</span>
       <input type="number" id="priceMax" min="0" step="0.01" placeholder="max" style="width:64px">
@@ -1086,6 +1175,13 @@ public class SkinGap {
         <option value="min">Min listé</option>
       </select>
     </div>
+    <div class="grp" title="Prix d'achat utilisé pour l'écart et le ROI">
+      <span class="lbl">Achat :</span>
+      <select id="buySel">
+        <option value="ask">Min tradable (achetable maintenant)</option>
+        <option value="tp">Min (TP) : offre trade-protect, à son déblocage</option>
+      </select>
+    </div>
     <div class="grp">
       <label class="lbl" style="display:flex; align-items:center; gap:5px; cursor:pointer;">
         <input type="checkbox" id="hideAlerted" style="accent-color:var(--accent)">
@@ -1107,8 +1203,8 @@ public class SkinGap {
         <option value="gap_asc">Écart (bas → haut)</option>
         <option value="roi_desc">ROI % (haut → bas)</option>
         <option value="roi_asc">ROI % (bas → haut)</option>
-        <option value="min_asc">Prix min (bas → haut)</option>
-        <option value="min_desc">Prix min (haut → bas)</option>
+        <option value="min_asc">Prix d'achat (bas → haut)</option>
+        <option value="min_desc">Prix d'achat (haut → bas)</option>
         <option value="exp_asc">Prix espéré (bas → haut)</option>
         <option value="exp_desc">Prix espéré (haut → bas)</option>
         <option value="vol_desc">Volume (haut → bas)</option>
@@ -1179,6 +1275,7 @@ const EVENTS_URL = DASHBOARD_URL + "events";
 const overrides = {}; // n -> valeur manuelle du prix de vente espéré (brut, avant taxe)
 let volPeriod = "7";
 let priceMode = "veryfast"; // "veryfast" | "auto" | "median" | "min"  (mêmes modes que l'extension)
+let buyMode = "ask"; // "ask" : achat au Min tradable | "tp" : achat de l'offre la moins chère, trade-protect compris
 let sortMode = "gap_desc";
 let searchTerm = "";
 let minVol = 0;
@@ -1201,7 +1298,7 @@ const FILTERS_KEY = "skingap_filters_v1";
 
 function serializeFilters() {
   return {
-    volPeriod, priceMode, sortMode, searchTerm, minVol,
+    volPeriod, priceMode, buyMode, sortMode, searchTerm, minVol,
     priceMin: isFinite(priceMin) ? priceMin : null,
     priceMax: isFinite(priceMax) ? priceMax : null,
     roiMin: isFinite(roiMin) ? roiMin : null,
@@ -1228,6 +1325,7 @@ function loadFilters() {
 function applySavedFilters(f) {
   if (f.volPeriod !== undefined) volPeriod = f.volPeriod;
   if (f.priceMode !== undefined) priceMode = ["veryfast", "auto", "median", "min"].includes(f.priceMode) ? f.priceMode : "veryfast";
+  if (f.buyMode !== undefined) buyMode = ["ask", "tp"].includes(f.buyMode) ? f.buyMode : "ask";
   if (f.sortMode !== undefined) sortMode = f.sortMode;
   if (f.searchTerm !== undefined) searchTerm = f.searchTerm;
   if (f.minVol !== undefined) minVol = f.minVol;
@@ -1245,6 +1343,7 @@ function applySavedFilters(f) {
   document.querySelectorAll("#volPeriod button").forEach(b => b.classList.toggle("active", b.dataset.p === volPeriod));
   document.getElementById("sortSel").value = sortMode;
   document.getElementById("priceModeSel").value = priceMode;
+  document.getElementById("buySel").value = buyMode;
   document.getElementById("search").value = searchTerm;
   document.getElementById("minVol").value = minVol || 0;
   document.getElementById("priceMin").value = f.priceMin ?? "";
@@ -1262,7 +1361,7 @@ function applySavedFilters(f) {
 
 // Valeurs par défaut, utilisées par le bouton "Réinitialiser les filtres".
 const FILTER_DEFAULTS = {
-  volPeriod: "7", priceMode: "veryfast", sortMode: "gap_desc", searchTerm: "",
+  volPeriod: "7", priceMode: "veryfast", buyMode: "ask", sortMode: "gap_desc", searchTerm: "",
   minVol: 0, priceMin: 0, priceMax: Infinity, roiMin: -Infinity, roiMax: Infinity,
   typeFilter: "all", gapMin: -Infinity, gapMax: Infinity, newLowFilter: "all"
 };
@@ -1355,6 +1454,40 @@ function stockDays(it) {
   return it.qt / dr;
 }
 
+// Prix d'achat : Min tradable (achetable tout de suite) ou offre la moins chère trade-protect compris
+// (it.min <= it.ask ; égaux quand aucune offre trade-protect n'est moins chère que le Min tradable).
+function hasCheaperTp(it) { return it.min > 0 && it.min < it.ask - 1e-9; }
+function buyPrice(it) { return (buyMode === "tp" && hasCheaperTp(it)) ? it.min : it.ask; }
+
+// Revente "Très rapide" (calculée côté Java) adaptée à ce qu'on achète. On ne peut pas se servir de
+// l'annonce qu'on achète comme concurrente de sa propre revente :
+//  - offre trade-protect sous le Min tradable : elle n'est pas dans le marché tradable, le concurrent
+//    reste le Min tradable -> "xf" (proba "xp") ;
+//  - Min tradable : une fois acheté, le concurrent est la 2e annonce tradable -> "xb" (proba "xbp"),
+//    présent quand l'API permet de la connaître (<= 3 annonces), sinon "xf" (plafond sous le Min, prudent).
+// Retourne null si skins.json ne contient pas le prix v2.
+function fastOf(it) {
+  if (!(it.xf > 0)) return null;
+  let price, prob, comp, compLabel;
+  if (buyMode === "tp" && hasCheaperTp(it)) {
+    price = it.xf; prob = it.xp || 0; comp = it.ask; compLabel = "le Min tradable";
+  } else if (it.xb !== undefined && it.xb > 0) {
+    price = it.xb; prob = it.xbp || 0;
+    if (it.l2 !== undefined) { comp = it.l2; compLabel = "la 2e annonce tradable (le Min est celle qu'on achète)"; }
+    else { comp = null; compLabel = "aucune autre annonce tradable"; }
+  } else {
+    price = it.xf; prob = it.xp || 0; comp = it.ask;
+    compLabel = "le Min tradable (2e annonce inconnue au-delà de 3 annonces : prudent)";
+  }
+  const capped = comp !== null && price >= comp - 0.0101;
+  const base = it.xs > 0 ? "prix typique des dernières ventes ≈ " + it.xs.toFixed(2) + " € · " : "";
+  const why = base + (capped
+    ? "plafonné 1 ct sous " + compLabel + " (" + comp.toFixed(2) + " €), sinon elle se vend avant"
+    : comp === null ? compLabel + " : prix tiré des ventes"
+      : "prix tiré des ventes, déjà sous " + compLabel + " (" + comp.toFixed(2) + " €)");
+  return { price, prob, why };
+}
+
 function rawExpectedOf(it) {
   if (overrides[it.n] !== undefined) return { raw: overrides[it.n], usedMedian: false };
   const hasWm = it.wm !== null && it.wm !== undefined && it.wm > 0;
@@ -1367,7 +1500,8 @@ function rawExpectedOf(it) {
   if (priceMode === "veryfast") {
     // v2 (nov. 2026) : prix calculé côté Java par FastSellModel (vente visée sous 24-48 h),
     // exporté dans skins.json ("xf"). Repli sur l'ancien calcul si le champ est absent.
-    if (it.xf !== undefined && it.xf > 0) return { raw: it.xf, usedMedian: false };
+    const f = fastOf(it);
+    if (f) return { raw: f.price, usedMedian: false };
     const base = hasWm ? it.wm : it.ask;
     let raw = base * (1 - 0.02);
     if (dailyRate(it) < 0.5) raw *= 0.85;
@@ -1389,8 +1523,12 @@ function computeRows() {
     if (exp.raw === null || exp.raw === undefined) return false;
     const vol = volumeOf(it, volPeriod);
     if ((vol ?? 0) < minVol) return false;
-    if (it.ask < priceMin || it.ask > priceMax) return false;
-    if (probMin > 0 && priceMode === "veryfast" && it.xp !== undefined && it.xp * 100 < probMin) return false;
+    const buy = buyPrice(it);
+    if (buy < priceMin || buy > priceMax) return false;
+    if (probMin > 0 && priceMode === "veryfast") {
+      const f = fastOf(it);
+      if (f && f.prob * 100 < probMin) return false;
+    }
     if (typeFilter !== "all" && itemType(it.n) !== typeFilter) return false;
     if (selectedCats && !selectedCats.has(catOf(it))) return false;
     if (hideAlerted && alertedSkins.has(it.n.toLowerCase())) return false;
@@ -1401,8 +1539,9 @@ function computeRows() {
   rows = rows.map(it => {
     const exp = rawExpectedOf(it);
     const med = withTax(exp.raw);
-    const gap = med - it.ask;
-    const roi = it.ask > 0 ? (gap / it.ask) * 100 : 0;
+    const buy = buyPrice(it);
+    const gap = med - buy;
+    const roi = buy > 0 ? (gap / buy) * 100 : 0;
     return { it, rawMed: exp.raw, usedMedian: exp.usedMedian, med, gap, roi, vol: volumeOf(it, volPeriod) };
   }).filter(r => r.roi >= roiMin && r.roi <= roiMax && r.gap >= gapMin && r.gap <= gapMax);
   switch (sortMode) {
@@ -1410,8 +1549,8 @@ function computeRows() {
     case "gap_asc": rows.sort((a,b) => a.gap - b.gap); break;
     case "roi_desc": rows.sort((a,b) => b.roi - a.roi); break;
     case "roi_asc": rows.sort((a,b) => a.roi - b.roi); break;
-    case "min_asc": rows.sort((a,b) => a.it.ask - b.it.ask); break;
-    case "min_desc": rows.sort((a,b) => b.it.ask - a.it.ask); break;
+    case "min_asc": rows.sort((a,b) => buyPrice(a.it) - buyPrice(b.it)); break;
+    case "min_desc": rows.sort((a,b) => buyPrice(b.it) - buyPrice(a.it)); break;
     case "exp_asc": rows.sort((a,b) => a.med - b.med); break;
     case "exp_desc": rows.sort((a,b) => b.med - a.med); break;
     case "vol_desc": rows.sort((a,b) => (b.vol ?? 0) - (a.vol ?? 0)); break;
@@ -1475,10 +1614,11 @@ function render() {
     span.className = "med-val" + (isOverride ? " overridden" : "");
     span.textContent = r.med.toFixed(2) + " €";
     span.title = "Cliquer pour modifier manuellement (valeur brute, sans taxe)";
-    if (priceMode === "veryfast" && !isOverride && r.it.xf > 0) {
-      span.title = "≈ " + Math.round((r.it.xp || 0) * 100) + " % de chances de vente sous 48 h à ce prix · "
-        + (r.it.xl || 0).toFixed(2) + " vente(s)/jour estimée(s) — " + span.title;
-      if ((r.it.xp || 0) < 0.5) span.style.opacity = "0.6"; // vente sous 48 h peu probable même à ce prix
+    const fast = (priceMode === "veryfast" && !isOverride) ? fastOf(r.it) : null;
+    if (fast) {
+      span.title = "≈ " + Math.round(fast.prob * 100) + " % de chances de vente sous 48 h à ce prix · "
+        + (r.it.xl || 0).toFixed(2) + " vente(s)/jour estimée(s) · " + fast.why + " — " + span.title;
+      if (fast.prob < 0.5) span.style.opacity = "0.6"; // vente sous 48 h peu probable même à ce prix
     }
     span.onclick = () => startEdit(r.it.n, r.rawMed, tdMed);
     tdMed.appendChild(span);
@@ -1535,11 +1675,18 @@ function render() {
     tdAsk.textContent = r.it.ask.toFixed(2) + " €";
     tr.appendChild(tdAsk);
 
-    // Min avec trade-protect : simple indicateur, jamais utilisé dans les calculs
+    // Min avec trade-protect : prix d'achat en mode "Achat : Min (TP)" ; surligné quand une offre
+    // trade-protect est moins chère que le Min tradable.
     const tdMin = document.createElement("td");
     tdMin.className = "num";
-    tdMin.style.opacity = "0.55";
-    tdMin.title = "Avec trade-protect : indicatif, hors calculs";
+    if (hasCheaperTp(r.it)) {
+      tdMin.style.color = "var(--accent)";
+      tdMin.title = "Offre trade-protect " + ((1 - r.it.min / r.it.ask) * 100).toFixed(1)
+        + " % sous le Min tradable (achetable à son déblocage)";
+    } else {
+      tdMin.style.opacity = "0.55";
+      tdMin.title = "Aucune offre trade-protect sous le Min tradable";
+    }
     tdMin.textContent = r.it.min.toFixed(2) + " €";
     tr.appendChild(tdMin);
 
@@ -1552,6 +1699,14 @@ function render() {
     tdRoi.className = "num diff " + gapClass;
     tdRoi.textContent = (r.roi >= 0 ? "+" : "") + r.roi.toFixed(1) + " %";
     tr.appendChild(tdRoi);
+    // Très rapide : un écart n'a de sens que si la revente sous 48 h est probable. Items peu
+    // liquides (souvent une seule annonce tradable) : écart grisé, filtre "Proba 48h" pour les masquer.
+    if (fast && fast.prob < 0.5) {
+      for (const td of [tdGap, tdRoi]) {
+        td.style.opacity = "0.45";
+        td.title = "Vente sous 48 h peu probable (≈ " + Math.round(fast.prob * 100) + " %) : écart incertain";
+      }
+    }
 
     const tdLink = document.createElement("td");
     const detailLink = document.createElement("a");
@@ -1646,6 +1801,7 @@ document.getElementById("volPeriod").addEventListener("click", (e) => {
 });
 document.getElementById("sortSel").addEventListener("change", (e) => { sortMode = e.target.value; shown = PAGE; render(); saveFilters(); });
 document.getElementById("priceModeSel").addEventListener("change", (e) => { priceMode = e.target.value; shown = PAGE; render(); saveFilters(); });
+document.getElementById("buySel").addEventListener("change", (e) => { buyMode = e.target.value; shown = PAGE; render(); saveFilters(); });
 function updateSearchClearVisibility() {
   document.getElementById("searchClear").classList.toggle("show", document.getElementById("search").value.length > 0);
 }
@@ -1719,6 +1875,7 @@ document.getElementById("more").addEventListener("click", () => { shown += PAGE;
 document.getElementById("resetFilters").addEventListener("click", () => {
   volPeriod = FILTER_DEFAULTS.volPeriod;
   priceMode = FILTER_DEFAULTS.priceMode;
+  buyMode = FILTER_DEFAULTS.buyMode;
   sortMode = FILTER_DEFAULTS.sortMode;
   searchTerm = FILTER_DEFAULTS.searchTerm;
   minVol = FILTER_DEFAULTS.minVol;
@@ -1736,6 +1893,7 @@ document.getElementById("resetFilters").addEventListener("click", () => {
   document.querySelectorAll("#volPeriod button").forEach(b => b.classList.toggle("active", b.dataset.p === volPeriod));
   document.getElementById("sortSel").value = sortMode;
   document.getElementById("priceModeSel").value = priceMode;
+  document.getElementById("buySel").value = buyMode;
   document.getElementById("search").value = "";
   document.getElementById("minVol").value = 0;
   document.getElementById("priceMin").value = "";

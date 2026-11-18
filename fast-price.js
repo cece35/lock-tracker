@@ -6,9 +6,22 @@
 // Entrées :
 //   sales : objet de /v1/sales/history pour l'item (last_24_hours, last_7_days, last_30_days,
 //           last_90_days, chacun avec volume / min / median / max)
-//   L     : prix min des annonces immédiatement tradables (/v1/items?tradable=true, min_price)
-//   G     : prix min de toutes les annonces, trade-lock inclus (/v1/items, min_price)
-// Sortie : { price, lambda, prob48h, mode }  (price = prix brut conseillé, 0 si incalculable)
+//   L     : prix min des annonces immédiatement tradables (/v1/items?tradable=true, min_price —
+//           le paramètre tradable=true est obligatoire : sans lui l'API renvoie toutes les annonces)
+//   G     : prix min de toutes les annonces, trade-lock inclus (/v1/items?tradable=false, min_price)
+//   marketPage : market_page de l'item (sert à choisir la famille de paramètres : stickers et
+//           caisses à part) ; facultatif, par défaut paramètres "skins"
+// Sortie : { price, lambda, prob48h, mode, salesMedian }  (price = prix brut conseillé, 0 si
+//          incalculable ; salesMedian = prix typique des dernières ventes, base du calcul)
+//
+// Quel prix utiliser ? Il ne faut jamais que l'annonce qu'on achète serve de plafond à sa propre
+// revente :
+//   - offre trade-protect achetée à son déblocage (moins chère que L) ou item déjà en inventaire :
+//     fastSellPrice(sales, L, G, marketPage)  -> plafond 1 centime sous L ("xf" de skins.json) ;
+//   - achat de l'annonce tradable la moins chère (prix L) :
+//     fastSellPriceAfterBuyingFront(sales, L, G, tradable) -> plafond sous la 2e annonce tradable
+//     ("xb" de skins.json), avec tradable = l'objet /v1/items?tradable=true de l'item ; renvoie null
+//     quand la 2e annonce est inconnue (plus de 3 annonces) : utiliser alors fastSellPrice.
 
 const FAST = {
   HORIZON_DAYS: 2.0,
@@ -20,11 +33,12 @@ const FAST = {
   N_MIN: 4.0,
   SIGMA0: 0.06,
   K_PRIOR: 2.0,
-  A_MAX: 0.80,
-  R_LO: 0.89,
-  B: 3.0,
+  // Acceptation recalibrée le 18/11/2026 sur une journée entière (voir SkinGap.java / README).
+  SKINS: { aMax: 0.40, rLo: 0.94, b: 3.25 },   // skins, couteaux, gants, charms, agents...
+  STACK: { aMax: 0.21, rLo: 0.85, b: 1.5 },    // stickers et caisses
   LAMBDA_EXP: 0.80,
   NO_SALES_DISCOUNT: 0.20,
+  Q_CEIL: 0.90,   // plus aucune annonce tradable après l'achat : borne au 90e centile des prix payés
 };
 
 function fastErfc(x) {
@@ -91,10 +105,37 @@ function fastQuantile(p, comps) {
 
 function fastFloorCents(p) { return Math.max(FAST.TICK, Math.floor(p * 100 + 1e-9) / 100); }
 
-function fastAccept(r) { return r <= FAST.R_LO ? FAST.A_MAX : FAST.A_MAX * Math.pow(r / FAST.R_LO, -FAST.B); }
+function fastParamsFor(marketPage) {
+  const m = /[?&]cat=([^&]+)|\/market\/([^/?&]+)/.exec(marketPage || "");
+  const cat = m ? (m[1] !== undefined ? m[1] : m[2]).toLowerCase() : "";
+  return (cat === "sticker" || cat === "container") ? FAST.STACK : FAST.SKINS;
+}
 
-function fastSellPrice(sales, L, G) {
-  if (!(L > 0)) return { price: 0, lambda: 0, prob48h: 0, mode: "none" };
+function fastAccept(r, pr) { return r <= pr.rLo ? pr.aMax : pr.aMax * Math.pow(r / pr.rLo, -pr.b); }
+
+function fastSellPrice(sales, L, G, marketPage) {
+  if (!(L > 0)) return { price: 0, lambda: 0, prob48h: 0, mode: "none", salesMedian: 0 };
+  return fastPriceCore(sales, L - FAST.TICK, G > 0 ? Math.min(G, L) : L, false, fastParamsFor(marketPage));
+}
+
+// 2e prix tradable quand l'API le donne exactement : 2 annonces -> max_price, 3 -> median_price.
+function fastSecondTradable(tradable) {
+  if (!tradable) return null;
+  const q = Math.round(tradable.quantity || 0);
+  const l2 = q === 2 ? tradable.max_price : q === 3 ? tradable.median_price : NaN;
+  return (l2 > 0 && l2 >= (tradable.min_price || 0)) ? l2 : null;
+}
+
+function fastSellPriceAfterBuyingFront(sales, L, G, tradable, marketPage) {
+  if (!(L > 0) || !tradable) return null;
+  const pr = fastParamsFor(marketPage !== undefined ? marketPage : tradable.market_page);
+  const front = G > 0 ? Math.min(G, L) : L;
+  if (Math.round(tradable.quantity || 0) === 1) return fastPriceCore(sales, Infinity, front, true, pr);
+  const l2 = fastSecondTradable(tradable);
+  return l2 === null ? null : fastPriceCore(sales, l2 - FAST.TICK, front, false, pr);
+}
+
+function fastPriceCore(sales, cap, front, ceilQ, pr) {
   const keys = ["last_24_hours", "last_7_days", "last_30_days", "last_90_days"];
   const n = [], lo = [], med = [], hi = [];
   for (const k of keys) {
@@ -125,25 +166,29 @@ function fastSellPrice(sales, L, G) {
     tot += beta[k];
     comps.push(wd);
   }
-  const cap = L - FAST.TICK;
   if (!comps.length || tot <= 0) {
-    const front = G > 0 ? Math.min(G, L) : L;
-    return { price: fastFloorCents(Math.min(cap, front * (1 - FAST.NO_SALES_DISCOUNT))), lambda: 0, prob48h: 0, mode: "no-sales" };
+    return { price: fastFloorCents(Math.min(cap, front * (1 - FAST.NO_SALES_DISCOUNT))), lambda: 0, prob48h: 0, mode: "no-sales", salesMedian: 0 };
   }
   for (const cp of comps) cp[0] /= tot;
   const medPrice = Math.exp(fastQuantile(0.5, comps)); // prix typique récent
   const xStar = -Math.log(1 - FAST.TARGET_PROB);
   const lamEff = Math.pow(lambda, FAST.LAMBDA_EXP);
-  const xMax = FAST.HORIZON_DAYS * lamEff * FAST.A_MAX;
+  const xMax = FAST.HORIZON_DAYS * lamEff * pr.aMax;
   let r, mode;
-  if (FAST.B <= 0) { r = Infinity; mode = "front"; }
-  else if (xMax >= xStar) { r = FAST.R_LO * Math.pow(xMax / xStar, 1 / FAST.B); mode = "target"; }
-  else { r = FAST.R_LO; mode = "best-effort"; }
+  if (pr.b <= 0) { r = Infinity; mode = "front"; }
+  else if (xMax >= xStar) { r = pr.rLo * Math.pow(xMax / xStar, 1 / pr.b); mode = "target"; }
+  else { r = pr.rLo; mode = "best-effort"; }
   let p = medPrice * r;
+  if (ceilQ) {
+    const q = Math.exp(fastQuantile(FAST.Q_CEIL, comps));
+    if (p > q) { p = q; mode += "+q90"; }
+  }
   if (p >= cap) { p = cap; mode += "+cap"; }
   p = fastFloorCents(p);
-  const prob = 1 - Math.exp(-FAST.HORIZON_DAYS * lamEff * fastAccept(p / medPrice));
-  return { price: p, lambda, prob48h: prob, mode };
+  const prob = 1 - Math.exp(-FAST.HORIZON_DAYS * lamEff * fastAccept(p / medPrice, pr));
+  return { price: p, lambda, prob48h: prob, mode, salesMedian: medPrice };
 }
 
-if (typeof module !== "undefined") module.exports = { fastSellPrice, FAST };
+if (typeof module !== "undefined") {
+  module.exports = { fastSellPrice, fastSellPriceAfterBuyingFront, fastSecondTradable, fastParamsFor, FAST };
+}
