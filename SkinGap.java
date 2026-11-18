@@ -492,8 +492,9 @@ public class SkinGap {
 
     // price = prix brut conseillé (0 si incalculable), lambda = ventes/jour estimées,
     // prob48h = probabilité estimée de vente sous 48 h à ce prix, mode = branche du calcul.
-    record FastPrice(double price, double lambda, double prob48h, String mode) {
-        static final FastPrice NONE = new FastPrice(0, 0, 0, "none");
+    // salesMedian = prix "typique" des dernières ventes (médiane pondérée par récence, 0 si aucune).
+    record FastPrice(double price, double lambda, double prob48h, String mode, double salesMedian) {
+        static final FastPrice NONE = new FastPrice(0, 0, 0, "none", 0);
     }
 
     static final class FastSellModel {
@@ -506,15 +507,21 @@ public class SkinGap {
         static final double N_MIN = 4.0;          // ventes "effectives" minimum avant d'élargir
         static final double SIGMA0 = 0.06;        // dispersion a priori des prix de vente (log)
         static final double K_PRIOR = 2.0;        // poids de l'a priori, en nombre de ventes
-        // Acceptation MESURÉE (flux live, 17/11/2026, 149 achats de têtes de file sur ~12 000 skins) :
-        // une annonce TRADABLE en tête de file (moins chère que toutes les autres annonces tradables)
-        // au prix P est achetée au taux λ^LAMBDA_EXP · A(r), r = P / médiane des prix payés récemment :
-        //     A(r) = A_MAX                      si r <= R_LO   (baisser davantage n'accélère plus)
-        //     A(r) = A_MAX · (r / R_LO)^(-B)    sinon          (élasticité-prix B, IC 95 % [1,4 ; 4,6])
+        // Acceptation MESURÉE : une annonce TRADABLE en tête de file (moins chère que toutes les autres
+        // annonces tradables) au prix P est achetée au taux λ^LAMBDA_EXP · A(r), r = P / médiane des
+        // prix payés récemment :
+        //     A(r) = aMax                     si r <= rLo   (baisser davantage n'accélère plus)
+        //     A(r) = aMax · (r / rLo)^(-b)    sinon         (élasticité-prix b)
+        // Recalibré le 18/11/2026 sur une JOURNÉE entière (photo complète du marché, puis ventes des 24 h
+        // suivantes, 17 903 items, 1 705 ventes ; validé hors échantillon) : la 1re calibration (1 h 10
+        // de flux live en soirée, aMax 0,80 / rLo 0,89 / b 3,0) surestimait les ventes d'environ 50 %.
+        // Deux familles : les stickers et caisses réagissent beaucoup moins au prix que les skins.
         // LAMBDA_EXP < 1 : sur les items très liquides, plus de concurrence en tête de file.
-        static final double A_MAX = 0.80;
-        static final double R_LO = 0.89;
-        static final double B = 3.0;
+        record Params(double aMax, double rLo, double b) {}
+        // skins d'armes, couteaux, gants, charms, agents, music kits... : IC 95 % rLo [0,91 ; 0,96], b [3 ; 4]
+        static final Params SKINS = new Params(0.40, 0.94, 3.25);
+        // stickers et caisses (rLo borné à 0,85 : sans borne il partirait vers 0,3, ce qui brade l'item)
+        static final Params STACK = new Params(0.21, 0.85, 1.5);
         static final double LAMBDA_EXP = 0.80;
         static final double NO_SALES_DISCOUNT = 0.20;  // aucune vente sur 90 j
         // Plus AUCUNE annonce tradable après l'achat (le Min était la seule) : pas de concurrent pour
@@ -585,8 +592,20 @@ public class SkinGap {
 
         static double floorCents(double p) { return Math.max(TICK, Math.floor(p * 100 + 1e-9) / 100); }
 
-        static double accept(double r) {
-            return r <= R_LO ? A_MAX : A_MAX * Math.pow(r / R_LO, -B);
+        // Famille de paramètres d'après la catégorie de la page marché ("...&cat=Sticker" ou
+        // ".../market/sticker?...") ; tout ce qui n'est ni sticker ni caisse prend SKINS.
+        static Params paramsFor(String marketPage) {
+            String cat = "";
+            if (marketPage != null) {
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("[?&]cat=([^&]+)|/market/([^/?&]+)").matcher(marketPage);
+                if (m.find()) cat = (m.group(1) != null ? m.group(1) : m.group(2)).toLowerCase(Locale.ROOT);
+            }
+            return (cat.equals("sticker") || cat.equals("container")) ? STACK : SKINS;
+        }
+
+        static double accept(double r, Params pr) {
+            return r <= pr.rLo() ? pr.aMax() : pr.aMax() * Math.pow(r / pr.rLo(), -pr.b());
         }
 
         /** L = min tradable (annonces achetables tout de suite), G = min toutes annonces (trade-lock inclus). */
@@ -594,9 +613,9 @@ public class SkinGap {
         // en dessous). C'est le bon prix pour revendre un item qui n'est PAS cette annonce : item
         // déjà en inventaire, ou offre trade-protect achetée à son déblocage (absente du marché
         // tradable, elle ne retire pas L).
-        static FastPrice compute(SalesWindows s, double L, double G) {
+        static FastPrice compute(SalesWindows s, double L, double G, Params pr) {
             if (!(L > 0)) return FastPrice.NONE;
-            return price(s, L - TICK, G > 0 ? Math.min(G, L) : L, false);
+            return price(s, L - TICK, G > 0 ? Math.min(G, L) : L, false, pr);
         }
 
         // Prix "Très rapide" pour qui ACHÈTE l'annonce tradable la moins chère (L) : une fois achetée
@@ -606,12 +625,12 @@ public class SkinGap {
         // max / quantité, ce qui fixe L2 exactement jusqu'à 3 annonces (voir secondTradable) ; avec
         // une seule annonce il n'y a plus de concurrent tradable (plafond Q_CEIL). null si L2 est
         // inconnu (plus de 3 annonces) : l'appelant garde alors compute(), plafonné sous L (prudent).
-        static FastPrice computeAfterBuyingFront(SalesWindows s, double L, double G, MarketStats t) {
+        static FastPrice computeAfterBuyingFront(SalesWindows s, double L, double G, MarketStats t, Params pr) {
             if (!(L > 0)) return null;
             double front = G > 0 ? Math.min(G, L) : L;
-            if (Math.round(t.quantity()) == 1) return price(s, Double.POSITIVE_INFINITY, front, true);
+            if (Math.round(t.quantity()) == 1) return price(s, Double.POSITIVE_INFINITY, front, true, pr);
             Double l2 = secondTradable(t);
-            return l2 == null ? null : price(s, l2 - TICK, front, false);
+            return l2 == null ? null : price(s, l2 - TICK, front, false, pr);
         }
 
         // 2e prix tradable le plus bas quand l'API le donne exactement : 2 annonces -> max_price,
@@ -625,7 +644,7 @@ public class SkinGap {
 
         // Cœur du calcul. cap = prix maximum (1 centime sous le concurrent tradable, +∞ s'il n'y en a
         // pas) ; front = référence de la branche "aucune vente" ; ceilQ = borne au centile Q_CEIL.
-        private static FastPrice price(SalesWindows s, double cap, double front, boolean ceilQ) {
+        private static FastPrice price(SalesWindows s, double cap, double front, boolean ceilQ, Params pr) {
             double[] n = s.n();
             double[] c = {n[0], Math.max(0, n[1] - n[0]), Math.max(0, n[2] - n[1]), Math.max(0, n[3] - n[2])};
             double[] w = new double[4];
@@ -658,24 +677,24 @@ public class SkinGap {
             if (comps.isEmpty() || tot <= 0) {
                 // Aucune vente sur 90 jours : rien ne garantit une vente en 48 h ; seule une forte
                 // décote sous la tête de file peut attirer un acheteur opportuniste.
-                return new FastPrice(floorCents(Math.min(cap, front * (1 - NO_SALES_DISCOUNT))), 0, 0, "no-sales");
+                return new FastPrice(floorCents(Math.min(cap, front * (1 - NO_SALES_DISCOUNT))), 0, 0, "no-sales", 0);
             }
             for (double[] cp : comps) cp[0] /= tot;
 
             double med = Math.exp(quantile(0.5, comps));   // prix "typique" récent (pondéré par récence)
             double xStar = -Math.log(1 - TARGET_PROB);       // nb moyen d'achats requis sur l'horizon
             double lamEff = Math.pow(lambda, LAMBDA_EXP);
-            double xMax = HORIZON_DAYS * lamEff * A_MAX;     // ... et le maximum atteignable (prix <= R_LO·med)
+            double xMax = HORIZON_DAYS * lamEff * pr.aMax(); // ... et le maximum atteignable (prix <= rLo·med)
             double r;
             String mode;
-            if (B <= 0) {
+            if (pr.b() <= 0) {
                 r = Double.POSITIVE_INFINITY;                // pas d'effet prix : la tête de file suffit
                 mode = "front";
             } else if (xMax >= xStar) {
-                r = R_LO * Math.pow(xMax / xStar, 1 / B);    // plus haut prix qui atteint la cible
+                r = pr.rLo() * Math.pow(xMax / xStar, 1 / pr.b()); // plus haut prix qui atteint la cible
                 mode = "target";
             } else {
-                r = R_LO;                                    // cible inatteignable : meilleure chance réelle
+                r = pr.rLo();                                // cible inatteignable : meilleure chance réelle
                 mode = "best-effort";
             }
             double p = med * r;
@@ -685,8 +704,8 @@ public class SkinGap {
             }
             if (p >= cap) { p = cap; mode += "+cap"; }
             p = floorCents(p);
-            double prob = 1 - Math.exp(-HORIZON_DAYS * lamEff * accept(p / med));
-            return new FastPrice(p, lambda, prob, mode);
+            double prob = 1 - Math.exp(-HORIZON_DAYS * lamEff * accept(p / med, pr));
+            return new FastPrice(p, lambda, prob, mode, med);
         }
     }
 
@@ -871,8 +890,9 @@ public class SkinGap {
             // offre trade-protect achetée à son déblocage (elle n'est pas dans le marché tradable) et
             // pour un item déjà en inventaire. xb : revente si on achète le Min tradable lui-même
             // (concurrent = 2e annonce tradable), seulement quand l'API permet de la connaître.
-            FastPrice fast = FastSellModel.compute(windows, askRaw, e.getValue());
-            FastPrice fastBuy = FastSellModel.computeAfterBuyingFront(windows, askRaw, e.getValue(), tStats);
+            FastSellModel.Params fastParams = FastSellModel.paramsFor(mp);
+            FastPrice fast = FastSellModel.compute(windows, askRaw, e.getValue(), fastParams);
+            FastPrice fastBuy = FastSellModel.computeAfterBuyingFront(windows, askRaw, e.getValue(), tStats, fastParams);
             results.add(new Result(name, mp, vol, e.getValue(), askRaw, weighted, image, tStats, gStats, model,
                     versionByKey.get(name), fast, fastBuy, FastSellModel.secondTradable(tStats)));
         }
@@ -922,7 +942,9 @@ public class SkinGap {
                 .append(",\"xf\":").append(r.fast().price())
                 .append(",\"xl\":").append(Math.round(r.fast().lambda() * 1000) / 1000.0)
                 .append(",\"xp\":").append(Math.round(r.fast().prob48h() * 1000) / 1000.0)
-                .append(",\"xm\":\"").append(r.fast().mode()).append("\"");
+                .append(",\"xm\":\"").append(r.fast().mode()).append("\"")
+                // Prix typique des dernières ventes (médiane pondérée par récence) sur lequel repose le calcul.
+                .append(",\"xs\":").append(Math.round(r.fast().salesMedian() * 100) / 100.0);
             // Revente "Très rapide" si l'on achète le Min tradable lui-même (xb, proba xbp) :
             // présent seulement quand la 2e annonce tradable est connue (<= 3 annonces) ; l2 = son prix.
             if (r.fastBuy() != null) {
@@ -1079,12 +1101,15 @@ public class SkinGap {
     l'usure (<code>exterior=</code>) et StatTrak™/Souvenir détectés automatiquement depuis le nom.<br>
     <b>Prix de vente espéré :</b> calculé selon le mode choisi dans "Mode prix" (l'extension doit lire le
     champ <code>xf</code> de skins.json pour avoir le même "Très rapide") —
-    <b>Très rapide</b> (par défaut) : le prix le plus haut qui laisse ~80 % de chances de vendre sous 48 h
-    (~55 % sous 24 h), estimé à partir du rythme de ventes récent et des prix réellement payés ces derniers
-    jours, toujours 1 centime sous l'annonce tradable concurrente (probabilité, rythme et concurrent au
-    survol du prix) : si l'on achète le Min tradable, la concurrence restante est la <i>2e</i> annonce
-    tradable (connue exactement jusqu'à 3 annonces ; au-delà, prudence : plafond sous le Min) ; si l'on
-    achète une offre trade-protect, c'est le Min tradable ;
+    <b>Très rapide</b> (par défaut) : part des <i>dernières ventes</i> (prix typique pondéré par récence et
+    nombre de ventes par jour) et prend le prix le plus haut qui laisse ~80 % de chances de vendre sous
+    48 h, d'après une calibration sur une journée entière de ventes réelles ; si c'est hors d'atteinte
+    (item peu liquide), le prix qui donne la meilleure chance, avec sa probabilité. Si une annonce tradable
+    concurrente est moins chère, on passe 1 centime dessous, sinon elle se vend avant : mesuré sur 24 h,
+    quand le Min est sous les ventes passées, les ventes du lendemain se font au niveau du Min, pas des
+    ventes passées. Le concurrent est la <i>2e</i> annonce tradable si l'on achète le Min (connue jusqu'à
+    3 annonces ; au-delà, prudence : plafond sous le Min), le Min tradable si l'on achète une offre
+    trade-protect (détail au survol du prix) ;
     <b>Auto</b> : prix min listé, sauf si la médiane
     pondérée lui est <i>inférieure</i> (affiché avec <span style="color:var(--accent)">Ⓜ</span>) ;
     <b>Médiane</b> : toujours la médiane pondérée (prix min listé si aucune vente) ; <b>Min listé</b> :
@@ -1443,16 +1468,24 @@ function buyPrice(it) { return (buyMode === "tp" && hasCheaperTp(it)) ? it.min :
 // Retourne null si skins.json ne contient pas le prix v2.
 function fastOf(it) {
   if (!(it.xf > 0)) return null;
+  let price, prob, comp, compLabel;
   if (buyMode === "tp" && hasCheaperTp(it)) {
-    return { price: it.xf, prob: it.xp || 0, why: "concurrent : Min tradable " + it.ask.toFixed(2) + " €" };
+    price = it.xf; prob = it.xp || 0; comp = it.ask; compLabel = "le Min tradable";
+  } else if (it.xb !== undefined && it.xb > 0) {
+    price = it.xb; prob = it.xbp || 0;
+    if (it.l2 !== undefined) { comp = it.l2; compLabel = "la 2e annonce tradable (le Min est celle qu'on achète)"; }
+    else { comp = null; compLabel = "aucune autre annonce tradable"; }
+  } else {
+    price = it.xf; prob = it.xp || 0; comp = it.ask;
+    compLabel = "le Min tradable (2e annonce inconnue au-delà de 3 annonces : prudent)";
   }
-  if (it.xb !== undefined && it.xb > 0) {
-    return { price: it.xb, prob: it.xbp || 0, why: it.l2 !== undefined
-      ? "concurrent après achat du Min : 2e annonce tradable " + it.l2.toFixed(2) + " €"
-      : "seule annonce tradable : plus de concurrent tradable après achat" };
-  }
-  return { price: it.xf, prob: it.xp || 0, why: "2e annonce tradable inconnue (plus de 3 annonces) : plafonné sous le Min "
-    + it.ask.toFixed(2) + " €, prudent" };
+  const capped = comp !== null && price >= comp - 0.0101;
+  const base = it.xs > 0 ? "prix typique des dernières ventes ≈ " + it.xs.toFixed(2) + " € · " : "";
+  const why = base + (capped
+    ? "plafonné 1 ct sous " + compLabel + " (" + comp.toFixed(2) + " €), sinon elle se vend avant"
+    : comp === null ? compLabel + " : prix tiré des ventes"
+      : "prix tiré des ventes, déjà sous " + compLabel + " (" + comp.toFixed(2) + " €)");
+  return { price, prob, why };
 }
 
 function rawExpectedOf(it) {

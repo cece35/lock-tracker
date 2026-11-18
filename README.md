@@ -767,12 +767,13 @@ tradable, il ne reste aucun concurrent : le prix est borné au 90e centile des p
 récemment. Au-delà de 3 annonces, la 2e annonce est inconnue et `xb` est absent : on garde `xf`
 (plafond sous le Min, prudent).
 
-Conséquence, vérifiée sur une photo complète du marché (18/11/2026, 24 927 items) : en achetant le
-Min tradable, l'écart « Très rapide » ne peut être positif que si la 2e annonce est nettement plus
-chère. C'est arrivé sur 63 items, tous très peu liquides (aucun avec ≥ 50 % de chances de vente
-sous 48 h). Côté tradable, le marché ne laisse donc pas d'annonce sous son prix de revente rapide.
-Les écarts positifs viennent des offres trade-protect : 581 items en avaient une sous le prix net
-de revente rapide, dont 363 avec ≥ 50 % de chances de vente sous 48 h. Sur la page, le sélecteur
+Conséquence, vérifiée sur une photo complète du marché (18/11/2026, 24 928 items, paramètres
+recalibrés) : en achetant le Min tradable, l'écart « Très rapide » ne peut être positif que si la
+2e annonce est nettement plus chère. C'est arrivé sur 85 items, tous très peu liquides (aucun avec
+≥ 30 % de chances de vente sous 48 h). Côté tradable, le marché ne laisse donc pas d'annonce sous
+son prix de revente rapide. Les écarts positifs viennent des offres trade-protect : 567 items en
+avaient une sous le prix net de revente rapide, dont 169 avec ≥ 50 % de chances de vente sous
+48 h (107 avec ≥ 80 %). Sur la page, le sélecteur
 « Achat » choisit le prix d'achat : « Min tradable » (achetable maintenant, par défaut) ou
 « Min (TP) » (offre trade-protect, achetable à son déblocage).
 
@@ -785,18 +786,44 @@ le prix était trop bas (médiane −6,7 %, P90 −26 %).
 
 ## Paramètres et validation
 
-`A(r) = 0,80` si `r ≤ 0,89`, sinon `0,80 · (r / 0,89)^-3,0` ; taux d'achat = `λ^0,8 · A(r)`.
-Ajustés par maximum de vraisemblance sur 1 h 10 de flux live (149 achats de têtes de file
-tradables, ~12 000 skins suivis), validés hors échantillon (ajustement sur la 1re moitié,
-meilleure prédiction de la 2e moitié qu'un taux constant). Contrôle de calibration : 151,7 achats
-prédits pour 149 observés, et accord par tranche de liquidité et de prix.
+`A(r) = aMax` si `r ≤ rLo`, sinon `aMax · (r / rLo)^-b` ; taux d'achat = `λ^0,8 · A(r)`.
 
-Effet par rapport à l'ancien calcul (skins, modèle calibré) : pour 1,2 à 2 ventes/jour, la part
-d'items qui se vendent sous 48 h avec ≥ 80 % de chances passe de 28 % à 100 % ; pour les items
-liquides le prix reste « min − 1 centime » ; pour les items lents la probabilité affichée dit
-honnêtement que 48 h est hors d'atteinte. L'ancien « −0,1 % sous le min » était arrondi au
-centime : sous 5 € il retombait exactement sur le min et ne passait jamais devant.
+| famille | aMax | rLo | b |
+|---|---|---|---|
+| skins, couteaux, gants, charms, agents, music kits… | 0,40 | 0,94 | 3,25 |
+| stickers et caisses | 0,21 | 0,85 | 1,5 |
 
-Limites : calibré sur un créneau de soirée (Europe) ; les items empilables (caisses, stickers)
-ne passent pas par le flux live et n'ont pas pu être vérifiés (pour eux le prix vaut presque
-toujours min − 1 centime) ; à recalibrer de temps en temps (même méthode : flux live + photo REST).
+**Recalibré le 18/11/2026 sur une journée entière.** Méthode : une photo complète du marché
+(17/11 17:24 UTC), puis les ventes réellement faites dans les 24 h suivantes (photo du 18/11
+18:10 UTC) ; pour chaque item, une annonce placée 1 centime sous le Min tradable aurait-elle été
+achetée ? 17 903 items, 1 705 ventes, maximum de vraisemblance, validation croisée (appris sur un
+item sur deux, testé sur les autres : log-vraisemblance −2 056 contre −2 287 avec les anciens
+paramètres). La 1re calibration (1 h 10 de flux live en soirée, aMax 0,80 / rLo 0,89 / b 3,0)
+surestimait les ventes d'environ 50 % : elle avait été faite à l'heure de pointe. Prédit / observé
+après recalibration, skins : 282 / 257 (< 0,3 vente/j), 477 / 467 (0,3-1), 425 / 463 (1-3),
+195 / 199 (3-10). Intervalles à 95 % (skins) : rLo [0,91 ; 0,96], b [3 ; 4]. Pour les stickers,
+rLo est borné à 0,85 (sans borne il descendrait vers 0,3, c'est-à-dire brader l'item, pour un gain
+de vraisemblance négligeable).
+
+Conséquences : 2,4 % des items peuvent se vendre sous 48 h avec ≥ 80 % de chances (il faut
+environ 2,4 ventes/jour pour un skin). Pour les autres, le prix est celui qui donne la meilleure
+chance (0,94 × prix typique des dernières ventes pour un skin), et la probabilité affichée le dit.
+
+## « Le prix devrait suivre les dernières ventes, pas les annonces » — testé
+
+Hypothèse : s'il y a des annonces moins chères que les dernières ventes, elles vont partir, et
+l'item se revendra au niveau des ventes. Test sur les 24 h entre les deux photos. Sur 218 items
+dont le Min tradable était au moins 6 % sous les dernières ventes :
+
+- seuls 26 % ont eu une vente médiane, le lendemain, au niveau des ventes passées ;
+- même en prenant la vente la plus chère de la journée, seuls 39 % atteignent ce niveau ;
+- le Min du lendemain était inchangé (médiane).
+
+Les annonces moins chères sont donc, le plus souvent, le nouveau prix du marché. Si l'on enlève
+le plafond « Min − 1 centime » pour vendre au prix des ventes, les items liquides se vendent
+dans 12 % des cas en 24 h, contre 55 % avec le plafond. Le prix « Très rapide » part donc des
+ventes, mais reste plafonné 1 centime sous l'annonce tradable concurrente. Le prix des ventes
+passées reste atteignable avec de la patience : c'est le mode « Médiane ».
+
+Limites : une seule journée de recul (un mardi-mercredi de novembre) ; à refaire de temps en temps
+avec la même méthode (deux photos complètes à 24 h d'écart suffisent).
