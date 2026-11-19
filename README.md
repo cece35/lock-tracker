@@ -837,3 +837,36 @@ passées reste atteignable avec de la patience : c'est le mode « Médiane ».
 
 Limites : une seule journée de recul (un mardi-mercredi de novembre) ; à refaire de temps en temps
 avec la même méthode (deux photos complètes à 24 h d'écart suffisent).
+
+## Revente sous trade-protect : deux prix espérés (19/11/2026)
+
+Les items encore sous trade-protect peuvent être vendus tout de suite : l'acheteur les reçoit à la
+fin de la protection. Ils se vendent moins cher, d'autant plus qu'il reste de jours. Mesures sur le
+flux live du 17/11 (skins : armes, couteaux, gants, agents ; 681 ventes, dont 31 % protégées) :
+
+| protection restante | prix / Min tradable | prix / prix typique des ventes |
+|---|---|---|
+| < 1 jour | 0,929 | 0,963 |
+| 1-3 jours | 0,907 | 0,940 |
+| 3-5 jours | 0,909 | 0,944 |
+| 5-6,5 jours | 0,876 | 0,945 |
+| 6,5-9 jours | 0,888 | 0,931 |
+
+L'offre protégée la moins chère se vend au rythme d'une annonce tradable jugée par rapport à
+~0,92 × le prix typique (116 achats observés en 3 h, 117 prédits), mais il y a moins d'acheteurs :
+rapporté au rythme moyen de la journée, × 0,66.
+
+Calcul du prix « Très rapide » sous trade-protect, avec `j` jours de protection restants :
+même méthode que le tradable, avec une référence `(0,958 − 0,0035 × j) × prix typique des
+ventes`, un rythme × 0,66, et un plafond 1 centime sous l'offre la moins chère (protégée ou non).
+`skins.json` donne `xt` / `xtp` pour 7 jours (protection fraîche, juste après un achat). La page
+recalcule pour n'importe quel nombre de jours à partir de `xs`, `xl`, `ask` et `min`, et
+`fast-price.js` fournit `fastTpPrice` : les trois donnent le même prix au centime.
+
+Sur la page, le sélecteur « Revente » choisit le prix espéré (tradable après la protection, ou
+sous trade-protect tout de suite, avec les jours restants). L'autre prix est affiché en petit,
+et l'infobulle donne le gain net d'attendre la fin de la protection, en € et en % par jour.
+Pour un skin, attendre rapporte en général 1,5 à 3 %/jour : vendre sous trade-protect ne vaut le
+coup que si l'argent rapporte plus ailleurs (ou si le prix risque de baisser).
+
+Limites : 3 h de flux (soirée) ; constantes à affiner avec d'autres enregistrements.

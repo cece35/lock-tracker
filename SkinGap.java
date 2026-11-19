@@ -524,6 +524,17 @@ public class SkinGap {
         // stickers et caisses (rLo borné à 0,85 : sans borne il partirait vers 0,3, ce qui brade l'item)
         static final Params STACK = new Params(0.21, 0.85, 1.5);
         static final double LAMBDA_EXP = 0.80;
+
+        // Revente SOUS trade-protect : l'item, encore protégé, est vendu tout de suite (l'acheteur le
+        // reçoit à la fin de la protection). Mesuré sur le flux live du 17/11/2026 (skins) : 31 % des
+        // ventes sont des items protégés, payés tpFactor(j) × le prix tradable, j = jours de protection
+        // restants, par rapport au prix typique des ventes (0,96 à moins d'1 jour -> 0,93 à 7 jours ; par
+        // rapport au Min tradable : 0,93 -> 0,89) ; l'offre protégée la moins chère part au rythme d'une
+        // annonce tradable jugée par rapport à ce prix, × TP_KAPPA (moins d'acheteurs pour les items
+        // protégés, ramené à la moyenne de la journée).
+        static final double TP_D0 = 0.958, TP_SLOPE = 0.0035, TP_KAPPA = 0.66;
+        static final double TP_DAYS_EXPORT = 7.0;     // "xt" de skins.json : protection fraîche (après un achat)
+        static double tpFactor(double days) { return TP_D0 - TP_SLOPE * Math.max(0, Math.min(8, days)); }
         static final double NO_SALES_DISCOUNT = 0.20;  // aucune vente sur 90 j
         // Plus AUCUNE annonce tradable après l'achat (le Min était la seule) : pas de concurrent pour
         // plafonner, on borne au 90e centile des prix payés récemment au lieu d'extrapoler A(r).
@@ -641,6 +652,28 @@ public class SkinGap {
             long q = Math.round(t.quantity());
             double l2 = q == 2 ? t.max() : q == 3 ? t.median() : Double.NaN;
             return (l2 > 0 && l2 >= t.min()) ? l2 : null;
+        }
+
+        // Prix "Très rapide" pour un item SOUS trade-protect, vendu tout de suite, avec `days` jours de
+        // protection restants. Calcul identique au tradable, mais référence = tpFactor(days) × médiane
+        // et rythme × TP_KAPPA ; il faut aussi être moins cher que l'offre la moins chère (protégée ou
+        // non, G <= L). Entrées ARRONDIES comme dans skins.json (médiane "xs" au centime, λ "xl" au
+        // millième) pour que la page et l'extension retrouvent exactement le même prix.
+        static FastPrice computeTp(double salesMedian, double lambda, double L, double G, double days, Params pr) {
+            double med = Math.round(salesMedian * 100) / 100.0, lam = Math.round(lambda * 1000) / 1000.0;
+            if (!(med > 0) || !(L > 0)) return null;
+            double ref = med * tpFactor(days);
+            double cap = Math.min(L, G > 0 ? G : L) - TICK;
+            double lamEff = Math.pow(lam, LAMBDA_EXP);
+            double xStar = -Math.log(1 - TARGET_PROB);
+            double xMax = HORIZON_DAYS * lamEff * TP_KAPPA * pr.aMax();
+            double r = xMax >= xStar ? pr.rLo() * Math.pow(xMax / xStar, 1 / pr.b()) : pr.rLo();
+            String mode = xMax >= xStar ? "target" : "best-effort";
+            double p = ref * r;
+            if (p >= cap) { p = cap; mode += "+cap"; }
+            p = floorCents(p);
+            double prob = 1 - Math.exp(-HORIZON_DAYS * lamEff * TP_KAPPA * accept(p / ref, pr));
+            return new FastPrice(p, lam, prob, mode, med);
         }
 
         // Cœur du calcul. cap = prix maximum (1 centime sous le concurrent tradable, +∞ s'il n'y en a
@@ -953,6 +986,16 @@ public class SkinGap {
                     .append(",\"xbp\":").append(Math.round(r.fastBuy().prob48h() * 1000) / 1000.0);
             }
             if (r.secondTradable() != null) data.append(",\"l2\":").append(r.secondTradable());
+            // Revente sous trade-protect, tout de suite, avec 7 jours de protection restants (xt, proba
+            // xtp) ; la page recalcule pour un autre nombre de jours à partir de xs, xl, ask et min.
+            FastPrice tp = r.fast().salesMedian() > 0
+                    ? FastSellModel.computeTp(r.fast().salesMedian(), r.fast().lambda(), r.askRaw(), r.minWithLocked(),
+                        FastSellModel.TP_DAYS_EXPORT, FastSellModel.paramsFor(r.marketPage()))
+                    : null;
+            if (tp != null) {
+                data.append(",\"xt\":").append(tp.price())
+                    .append(",\"xtp\":").append(Math.round(tp.prob48h() * 1000) / 1000.0);
+            }
             if (r.version() != null) {
                 data.append(",\"ver\":\"").append(jsonEscape(r.version())).append("\"");
             }
@@ -1116,6 +1159,13 @@ public class SkinGap {
     <b>Médiane</b> : toujours la médiane pondérée (prix min listé si aucune vente) ; <b>Min listé</b> :
     toujours le prix min listé. Le prix net après commission Skinport (8% si &lt;1000€, 6% si ≥1000€) est
     celui utilisé pour l'écart ; le prix brut est affiché entre parenthèses, à titre indicatif.
+    <b>Revente</b> : <b>Tradable</b> (par défaut) = prix une fois la protection finie ; <b>Sous trade-protect</b> =
+    vendu tout de suite, encore protégé (l'acheteur le reçoit à la fin), moins cher : mesuré sur le flux
+    live, ~7 % de décote sous le Min tradable à moins d'1 jour de la fin, ~11 % à 7 jours (réglage
+    "protection restante"), et moins d'acheteurs (vente plus lente). L'autre
+    prix est affiché en petit à côté du prix espéré, et l'infobulle donne le gain net d'attendre la fin
+    de la protection (en € et en % par jour d'attente) : pour un skin, attendre rapporte en général
+    1 à 2 %/jour, donc vendre sous trade-protect ne vaut le coup que si l'argent sert ailleurs.<br>
     <b>Écart</b> = prix de vente net − prix d'achat, choisi dans "Achat" : <b>Min tradable</b> (par défaut :
     annonce hors trade-protect, achetable maintenant) ou <b>Min (TP)</b> (offre la moins chère, trade-protect
     compris : achetable tout de suite, mais l'item n'arrive qu'à la fin de sa protection ; ces offres se
@@ -1184,6 +1234,15 @@ public class SkinGap {
         <option value="ask">Min tradable (achetable maintenant)</option>
         <option value="tp">Min (TP) : offre trade-protect (livrée en fin de protection)</option>
       </select>
+    </div>
+    <div class="grp" title="Revendre une fois la protection finie (prix tradable) ou tout de suite, encore sous trade-protect (moins cher : ~7 % sous le Min tradable à moins d'1 jour de la fin, ~11 % à 7 jours)">
+      <span class="lbl">Revente :</span>
+      <select id="sellSel">
+        <option value="tradable">Tradable (après la protection)</option>
+        <option value="tp">Sous trade-protect (tout de suite)</option>
+      </select>
+      <span class="lbl">protection restante (j) :</span>
+      <input type="number" id="tpDays" min="0" max="8" step="0.5" value="7" style="width:52px">
     </div>
     <div class="grp">
       <label class="lbl" style="display:flex; align-items:center; gap:5px; cursor:pointer;">
@@ -1279,6 +1338,8 @@ const overrides = {}; // n -> valeur manuelle du prix de vente espéré (brut, a
 let volPeriod = "7";
 let priceMode = "veryfast"; // "veryfast" | "auto" | "median" | "min"  (mêmes modes que l'extension)
 let buyMode = "ask"; // "ask" : achat au Min tradable | "tp" : achat de l'offre la moins chère, trade-protect compris
+let sellMode = "tradable"; // "tradable" : revente après la protection | "tp" : revente tout de suite, sous trade-protect
+let tpDays = 7; // jours de protection restants de l'item revendu (mode "tp")
 let sortMode = "gap_desc";
 let searchTerm = "";
 let minVol = 0;
@@ -1301,7 +1362,7 @@ const FILTERS_KEY = "skingap_filters_v1";
 
 function serializeFilters() {
   return {
-    volPeriod, priceMode, buyMode, sortMode, searchTerm, minVol,
+    volPeriod, priceMode, buyMode, sellMode, tpDays, sortMode, searchTerm, minVol,
     priceMin: isFinite(priceMin) ? priceMin : null,
     priceMax: isFinite(priceMax) ? priceMax : null,
     roiMin: isFinite(roiMin) ? roiMin : null,
@@ -1329,6 +1390,8 @@ function applySavedFilters(f) {
   if (f.volPeriod !== undefined) volPeriod = f.volPeriod;
   if (f.priceMode !== undefined) priceMode = ["veryfast", "auto", "median", "min"].includes(f.priceMode) ? f.priceMode : "veryfast";
   if (f.buyMode !== undefined) buyMode = ["ask", "tp"].includes(f.buyMode) ? f.buyMode : "ask";
+  if (f.sellMode !== undefined) sellMode = ["tradable", "tp"].includes(f.sellMode) ? f.sellMode : "tradable";
+  if (typeof f.tpDays === "number" && isFinite(f.tpDays)) tpDays = Math.max(0, Math.min(8, f.tpDays));
   if (f.sortMode !== undefined) sortMode = f.sortMode;
   if (f.searchTerm !== undefined) searchTerm = f.searchTerm;
   if (f.minVol !== undefined) minVol = f.minVol;
@@ -1347,6 +1410,8 @@ function applySavedFilters(f) {
   document.getElementById("sortSel").value = sortMode;
   document.getElementById("priceModeSel").value = priceMode;
   document.getElementById("buySel").value = buyMode;
+  document.getElementById("sellSel").value = sellMode;
+  document.getElementById("tpDays").value = tpDays;
   document.getElementById("search").value = searchTerm;
   document.getElementById("minVol").value = minVol || 0;
   document.getElementById("priceMin").value = f.priceMin ?? "";
@@ -1364,7 +1429,7 @@ function applySavedFilters(f) {
 
 // Valeurs par défaut, utilisées par le bouton "Réinitialiser les filtres".
 const FILTER_DEFAULTS = {
-  volPeriod: "7", priceMode: "veryfast", buyMode: "ask", sortMode: "gap_desc", searchTerm: "",
+  volPeriod: "7", priceMode: "veryfast", buyMode: "ask", sellMode: "tradable", tpDays: 7, sortMode: "gap_desc", searchTerm: "",
   minVol: 0, priceMin: 0, priceMax: Infinity, roiMin: -Infinity, roiMax: Infinity,
   typeFilter: "all", gapMin: -Infinity, gapMax: Infinity, newLowFilter: "all"
 };
@@ -1491,6 +1556,49 @@ function fastOf(it) {
   return { price, prob, why };
 }
 
+// Revente SOUS trade-protect (tout de suite) : miroir de FastSellModel.computeTp (SkinGap.java).
+// Mesuré sur le flux live : les items protégés se paient tpFactor(j) × le prix tradable, j = jours
+// de protection restants ; l'offre protégée la moins chère part au rythme d'une annonce tradable
+// jugée par rapport à ce prix, × TP.KAPPA. Avec j = 7, redonne exactement "xt" de skins.json.
+const TP = { D0: 0.958, SLOPE: 0.0035, KAPPA: 0.66, LEXP: 0.80, H: 2.0, TARGET: 0.80,
+  SKINS: { aMax: 0.40, rLo: 0.94, b: 3.25 }, STACK: { aMax: 0.21, rLo: 0.85, b: 1.5 } };
+function tpFactor(days) { return TP.D0 - TP.SLOPE * Math.max(0, Math.min(8, days)); }
+function famOf(it) { const c = catOf(it).toLowerCase(); return (c === "sticker" || c === "container") ? TP.STACK : TP.SKINS; }
+function tpOf(it, days) {
+  if (!(it.xs > 0) || !(it.ask > 0)) return null;
+  const pr = famOf(it);
+  const ref = it.xs * tpFactor(days);
+  const cap = Math.min(it.ask, it.min > 0 ? it.min : it.ask) - 0.01;
+  const lamEff = Math.pow(it.xl || 0, TP.LEXP);
+  const xStar = -Math.log(1 - TP.TARGET);
+  const xMax = TP.H * lamEff * TP.KAPPA * pr.aMax;
+  const r = xMax >= xStar ? pr.rLo * Math.pow(xMax / xStar, 1 / pr.b) : pr.rLo;
+  let p = Math.min(ref * r, cap);
+  p = Math.max(0.01, Math.floor(p * 100 + 1e-9) / 100);
+  const rr = p / ref;
+  const a = rr <= pr.rLo ? pr.aMax : pr.aMax * Math.pow(rr / pr.rLo, -pr.b);
+  return { price: p, prob: 1 - Math.exp(-TP.H * lamEff * TP.KAPPA * a) };
+}
+
+// Revente "Très rapide" selon le mode de revente choisi (tradable après la protection, ou tout de
+// suite sous trade-protect), avec le détail affiché au survol.
+function sellOf(it) {
+  const f = fastOf(it);
+  if (sellMode !== "tp") return f;
+  // sans historique de ventes (pas de "xs"), on applique simplement la décote mesurée au prix tradable
+  const t = tpOf(it, tpDays)
+    || (f ? { price: Math.max(0.01, Math.floor(f.price * tpFactor(tpDays) * 100 + 1e-9) / 100), prob: 0 } : null);
+  if (!t) return null;
+  const parts = ["vendu sous trade-protect avec " + tpDays + " j de protection restants (acheteur livré à la fin)"];
+  if (f) {
+    const gain = withTax(f.price) - withTax(t.price);
+    parts.push("en attendant la fin de la protection : " + f.price.toFixed(2) + " € (≈ " + Math.round(f.prob * 100)
+      + " % sous 48 h), soit " + (gain >= 0 ? "+" : "") + gain.toFixed(2) + " € net"
+      + (tpDays > 0 && t.price > 0 ? " (≈ " + (gain / withTax(t.price) / tpDays * 100).toFixed(1) + " %/jour d'attente)" : ""));
+  }
+  return { price: t.price, prob: t.prob, why: parts.join(" · ") };
+}
+
 function rawExpectedOf(it) {
   if (overrides[it.n] !== undefined) return { raw: overrides[it.n], usedMedian: false };
   const hasWm = it.wm !== null && it.wm !== undefined && it.wm > 0;
@@ -1503,7 +1611,7 @@ function rawExpectedOf(it) {
   if (priceMode === "veryfast") {
     // v2 (nov. 2026) : prix calculé côté Java par FastSellModel (vente visée sous 24-48 h),
     // exporté dans skins.json ("xf"). Repli sur l'ancien calcul si le champ est absent.
-    const f = fastOf(it);
+    const f = sellOf(it);
     if (f) return { raw: f.price, usedMedian: false };
     const base = hasWm ? it.wm : it.ask;
     let raw = base * (1 - 0.02);
@@ -1519,17 +1627,28 @@ function rawExpectedOf(it) {
   return { raw: it.ask, usedMedian: false };
 }
 
+// Prix espéré final : en revente sous trade-protect, les modes Auto / Médiane / Min listé prennent la
+// décote mesurée (tpFactor) ; "Très rapide" a son propre calcul (sellOf). Une valeur éditée à la main
+// reste telle quelle.
+function expectedOf(it) {
+  const e = rawExpectedOf(it);
+  if (sellMode === "tp" && priceMode !== "veryfast" && overrides[it.n] === undefined && e.raw > 0) {
+    return { raw: Math.max(0.01, Math.floor(e.raw * tpFactor(tpDays) * 100 + 1e-9) / 100), usedMedian: e.usedMedian };
+  }
+  return e;
+}
+
 function computeRows() {
   let rows = DATA.filter(it => {
     if (searchTerm && !it.n.toLowerCase().includes(searchTerm)) return false;
-    const exp = rawExpectedOf(it);
+    const exp = expectedOf(it);
     if (exp.raw === null || exp.raw === undefined) return false;
     const vol = volumeOf(it, volPeriod);
     if ((vol ?? 0) < minVol) return false;
     const buy = buyPrice(it);
     if (buy < priceMin || buy > priceMax) return false;
     if (probMin > 0 && priceMode === "veryfast") {
-      const f = fastOf(it);
+      const f = sellOf(it);
       if (f && f.prob * 100 < probMin) return false;
     }
     if (typeFilter !== "all" && itemType(it.n) !== typeFilter) return false;
@@ -1540,7 +1659,7 @@ function computeRows() {
     return true;
   });
   rows = rows.map(it => {
-    const exp = rawExpectedOf(it);
+    const exp = expectedOf(it);
     const med = withTax(exp.raw);
     const buy = buyPrice(it);
     const gap = med - buy;
@@ -1617,7 +1736,7 @@ function render() {
     span.className = "med-val" + (isOverride ? " overridden" : "");
     span.textContent = r.med.toFixed(2) + " €";
     span.title = "Cliquer pour modifier manuellement (valeur brute, sans taxe)";
-    const fast = (priceMode === "veryfast" && !isOverride) ? fastOf(r.it) : null;
+    const fast = (priceMode === "veryfast" && !isOverride) ? sellOf(r.it) : null;
     if (fast) {
       span.title = "≈ " + Math.round(fast.prob * 100) + " % de chances de vente sous 48 h à ce prix · "
         + (r.it.xl || 0).toFixed(2) + " vente(s)/jour estimée(s) · " + fast.why + " — " + span.title;
@@ -1636,6 +1755,20 @@ function render() {
     raw.className = "med-raw";
     raw.textContent = "(" + r.rawMed.toFixed(2) + " €)";
     tdMed.appendChild(raw);
+    // L'autre prix espéré (tradable <-> sous trade-protect), pour comparer d'un coup d'œil.
+    if (priceMode === "veryfast" && !isOverride) {
+      const alt = sellMode === "tp" ? fastOf(r.it) : tpOf(r.it, tpDays);
+      if (alt) {
+        const altSpan = document.createElement("span");
+        altSpan.className = "med-raw";
+        altSpan.textContent = (sellMode === "tp" ? " · tradable " : " · TP ") + alt.price.toFixed(2) + " €";
+        altSpan.title = sellMode === "tp"
+          ? "Prix brut en revendant une fois la protection finie (≈ " + Math.round(alt.prob * 100) + " % sous 48 h)"
+          : "Prix brut en revendant tout de suite sous trade-protect, " + tpDays + " j de protection restants (≈ "
+            + Math.round(alt.prob * 100) + " % sous 48 h)";
+        tdMed.appendChild(altSpan);
+      }
+    }
     if (isOverride) {
       const reset = document.createElement("span");
       reset.className = "reset-med";
@@ -1805,6 +1938,12 @@ document.getElementById("volPeriod").addEventListener("click", (e) => {
 document.getElementById("sortSel").addEventListener("change", (e) => { sortMode = e.target.value; shown = PAGE; render(); saveFilters(); });
 document.getElementById("priceModeSel").addEventListener("change", (e) => { priceMode = e.target.value; shown = PAGE; render(); saveFilters(); });
 document.getElementById("buySel").addEventListener("change", (e) => { buyMode = e.target.value; shown = PAGE; render(); saveFilters(); });
+document.getElementById("sellSel").addEventListener("change", (e) => { sellMode = e.target.value; shown = PAGE; render(); saveFilters(); });
+document.getElementById("tpDays").addEventListener("input", (e) => {
+  const v = parseFloat(e.target.value);
+  tpDays = isNaN(v) ? 7 : Math.max(0, Math.min(8, v));
+  shown = PAGE; render(); saveFilters();
+});
 function updateSearchClearVisibility() {
   document.getElementById("searchClear").classList.toggle("show", document.getElementById("search").value.length > 0);
 }
@@ -1879,6 +2018,8 @@ document.getElementById("resetFilters").addEventListener("click", () => {
   volPeriod = FILTER_DEFAULTS.volPeriod;
   priceMode = FILTER_DEFAULTS.priceMode;
   buyMode = FILTER_DEFAULTS.buyMode;
+  sellMode = FILTER_DEFAULTS.sellMode;
+  tpDays = FILTER_DEFAULTS.tpDays;
   sortMode = FILTER_DEFAULTS.sortMode;
   searchTerm = FILTER_DEFAULTS.searchTerm;
   minVol = FILTER_DEFAULTS.minVol;
@@ -1897,6 +2038,8 @@ document.getElementById("resetFilters").addEventListener("click", () => {
   document.getElementById("sortSel").value = sortMode;
   document.getElementById("priceModeSel").value = priceMode;
   document.getElementById("buySel").value = buyMode;
+  document.getElementById("sellSel").value = sellMode;
+  document.getElementById("tpDays").value = tpDays;
   document.getElementById("search").value = "";
   document.getElementById("minVol").value = 0;
   document.getElementById("priceMin").value = "";
