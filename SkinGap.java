@@ -1087,6 +1087,8 @@ public class SkinGap {
   .navlink:hover { color:var(--accent); border-color:var(--accent-dim); }
   .notice { background:var(--surface); border:1px solid var(--border); border-left:2px solid var(--accent-dim); padding:10px 12px; margin:14px 0 18px; color:var(--muted); font-size:11.5px; }
   .notice b { color:var(--text); font-weight:400; }
+  .notice summary { cursor:pointer; color:var(--text); }
+  .notice[open] summary { margin-bottom:8px; }
   .controls { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:14px; }
   .grp { display:flex; align-items:center; gap:6px; }
   .grp .lbl { color:var(--muted); font-size:11.5px; }
@@ -1156,43 +1158,6 @@ public class SkinGap {
     </div>
     <a class="navlink" id="dashLink" href="__DASHBOARD_URL__">→ dashboard</a>
   </header>
-
-  <div class="notice">
-    <b>Lien Skinport :</b> chaque lien pointe vers la page marché de l'item, trié par prix croissant
-    (<code>sort=price&order=asc</code>) et filtré sur le trade-protect ≤ 8 jours (<code>lock=8</code>), avec
-    l'usure (<code>exterior=</code>) et StatTrak™/Souvenir détectés automatiquement depuis le nom.<br>
-    <b>Prix de vente espéré :</b> calculé selon le mode choisi dans "Mode prix" (l'extension doit lire le
-    champ <code>xf</code> de skins.json pour avoir le même "Très rapide") —
-    <b>Très rapide</b> (par défaut) : part des <i>dernières ventes</i> (prix typique pondéré par récence et
-    nombre de ventes par jour) et prend le prix le plus haut qui laisse ~80 % de chances de vendre sous
-    48 h, d'après une calibration sur une journée entière de ventes réelles ; si c'est hors d'atteinte
-    (item peu liquide), le prix qui donne la meilleure chance, avec sa probabilité (moyenne sur 48 h : les
-    ventes vont ~3× plus vite le soir que la nuit, mettre en vente le soir aide). Si une annonce tradable
-    concurrente est moins chère, on passe 1 centime dessous, sinon elle se vend avant : mesuré sur 24 h,
-    quand le Min est sous les ventes passées, les ventes du lendemain se font au niveau du Min, pas des
-    ventes passées. Le concurrent est la <i>2e</i> annonce tradable si l'on achète le Min (connue jusqu'à
-    3 annonces ; au-delà, prudence : plafond sous le Min), le Min tradable si l'on achète une offre
-    trade-protect (détail au survol du prix) ;
-    <b>Auto</b> : prix min listé, sauf si la médiane
-    pondérée lui est <i>inférieure</i> (affiché avec <span style="color:var(--accent)">Ⓜ</span>) ;
-    <b>Médiane</b> : toujours la médiane pondérée (prix min listé si aucune vente) ; <b>Min listé</b> :
-    toujours le prix min listé. Le prix net après commission Skinport (8% si &lt;1000€, 6% si ≥1000€) est
-    celui utilisé pour l'écart ; le prix brut est affiché entre parenthèses, à titre indicatif.
-    <b>Revente</b> : <b>Tradable</b> (par défaut) = prix une fois la protection finie ; <b>Sous trade-protect</b> =
-    vendu tout de suite, encore protégé (l'acheteur le reçoit à la fin), moins cher : mesuré sur le flux
-    live, ~7 % de décote sous le Min tradable à moins d'1 jour de la fin, ~12 % à 7 jours (réglage
-    "protection restante"), et moins d'acheteurs (vente plus lente). L'autre
-    prix est affiché en petit à côté du prix espéré, et l'infobulle donne le gain net d'attendre la fin
-    de la protection (en € et en % par jour d'attente) : pour un skin, attendre rapporte en général
-    ~1,2 %/jour avec 7 jours restants, davantage quand la fin approche (~2 %/jour à 3 jours), donc
-    vendre sous trade-protect ne vaut le coup que si l'argent sert ailleurs.<br>
-    <b>Écart</b> = prix de vente net − prix d'achat, choisi dans "Achat" : <b>Min tradable</b> (par défaut :
-    annonce hors trade-protect, achetable maintenant) ou <b>Min (TP)</b> (offre la moins chère, trade-protect
-    compris : achetable tout de suite, mais l'item n'arrive qu'à la fin de sa protection ; ces offres se
-    vendent ~8 % moins cher que les tradables, d'où les deux niveaux de prix dans l'historique des ventes).
-    La colonne <b>Min (TP)</b> est surlignée quand une offre
-    trade-protect est moins chère que le Min tradable.
-  </div>
 
   <div class="controls">
     <div class="grp">
@@ -1333,6 +1298,44 @@ public class SkinGap {
     <tbody id="rows"></tbody>
   </table>
   <button id="more">Afficher plus</button>
+
+  <details class="notice">
+    <summary>Comment lire cette page (modes de prix, revente, écart…)</summary>
+    <b>Lien Skinport :</b> chaque lien pointe vers la page marché de l'item, trié par prix croissant
+    (<code>sort=price&order=asc</code>) et filtré sur le trade-protect ≤ 8 jours (<code>lock=8</code>), avec
+    l'usure (<code>exterior=</code>) et StatTrak™/Souvenir détectés automatiquement depuis le nom.<br>
+    <b>Prix de vente espéré :</b> calculé selon le mode choisi dans "Mode prix" (l'extension doit lire le
+    champ <code>xf</code> de skins.json pour avoir le même "Très rapide") —
+    <b>Très rapide</b> (par défaut) : part des <i>dernières ventes</i> (prix typique pondéré par récence et
+    nombre de ventes par jour) et prend le prix le plus haut qui laisse ~80 % de chances de vendre sous
+    48 h, d'après une calibration sur une journée entière de ventes réelles ; si c'est hors d'atteinte
+    (item peu liquide), le prix qui donne la meilleure chance, avec sa probabilité (moyenne sur 48 h : les
+    ventes vont ~3× plus vite le soir que la nuit, mettre en vente le soir aide). Si une annonce tradable
+    concurrente est moins chère, on passe 1 centime dessous, sinon elle se vend avant : mesuré sur 24 h,
+    quand le Min est sous les ventes passées, les ventes du lendemain se font au niveau du Min, pas des
+    ventes passées. Le concurrent est la <i>2e</i> annonce tradable si l'on achète le Min (connue jusqu'à
+    3 annonces ; au-delà, prudence : plafond sous le Min), le Min tradable si l'on achète une offre
+    trade-protect (détail au survol du prix) ;
+    <b>Auto</b> : prix min listé, sauf si la médiane
+    pondérée lui est <i>inférieure</i> (affiché avec <span style="color:var(--accent)">Ⓜ</span>) ;
+    <b>Médiane</b> : toujours la médiane pondérée (prix min listé si aucune vente) ; <b>Min listé</b> :
+    toujours le prix min listé. Le prix net après commission Skinport (8% si &lt;1000€, 6% si ≥1000€) est
+    celui utilisé pour l'écart ; le prix brut est affiché entre parenthèses, à titre indicatif.
+    <b>Revente</b> : <b>Tradable</b> (par défaut) = prix une fois la protection finie ; <b>Sous trade-protect</b> =
+    vendu tout de suite, encore protégé (l'acheteur le reçoit à la fin), moins cher : mesuré sur le flux
+    live, ~7 % de décote sous le Min tradable à moins d'1 jour de la fin, ~12 % à 7 jours (réglage
+    "protection restante"), et moins d'acheteurs (vente plus lente). L'autre
+    prix est affiché en petit à côté du prix espéré, et l'infobulle donne le gain net d'attendre la fin
+    de la protection (en € et en % par jour d'attente) : pour un skin, attendre rapporte en général
+    ~1,2 %/jour avec 7 jours restants, davantage quand la fin approche (~2 %/jour à 3 jours), donc
+    vendre sous trade-protect ne vaut le coup que si l'argent sert ailleurs.<br>
+    <b>Écart</b> = prix de vente net − prix d'achat, choisi dans "Achat" : <b>Min tradable</b> (par défaut :
+    annonce hors trade-protect, achetable maintenant) ou <b>Min (TP)</b> (offre la moins chère, trade-protect
+    compris : achetable tout de suite, mais l'item n'arrive qu'à la fin de sa protection ; ces offres se
+    vendent ~8 % moins cher que les tradables, d'où les deux niveaux de prix dans l'historique des ventes).
+    La colonne <b>Min (TP)</b> est surlignée quand une offre
+    trade-protect est moins chère que le Min tradable.
+  </details>
 
   <footer>
     Prix éditée manuellement = reste appliqué (affiché en orange, cliquable pour réinitialiser).
