@@ -40,6 +40,7 @@ jobs:
         env:
           SKINPORT_CLIENT_ID: ${{ secrets.SKINPORT_CLIENT_ID }}
           SKINPORT_CLIENT_SECRET: ${{ secrets.SKINPORT_CLIENT_SECRET }}
+          SKINGAP_RAW_DIR: raw   # réponses brutes de l'API, pour l'archive horaire (dernière étape)
         run: java SkinGap.java skingap.html
 
       - name: Injection de l'URL du dashboard
@@ -79,3 +80,25 @@ jobs:
             sudo chown tradelock:tradelock /opt/tradelock/server/static/skingap.html /opt/tradelock/server/static/skins.json &&
             echo "OK — skingap.html, skins.json (et account-stats.json si présent) mis à jour sur le VM."
           '
+
+      - name: Archive horaire des réponses brutes de l'API (sur le VM)
+        # Une copie par heure UTC des trois réponses de l'API (marché tradable, marché complet,
+        # historique des ventes), compressée (~3 Mo), dans ~/skinport-data/rest/AAAA-MM-JJ/HH/ :
+        # de quoi recalibrer le modèle sur des semaines de données, sans aucun appel API en plus.
+        # Non bloquant : le site est déjà à jour à cette étape.
+        continue-on-error: true
+        run: |
+          [ -s raw/t0.txt ] || { echo "Pas d'archive brute (SKINGAP_RAW_DIR)"; exit 0; }
+          T=$(cat raw/t0.txt)
+          DAY=$(date -u -d "@$T" +%F); HOUR=$(date -u -d "@$T" +%H)
+          SSH_OPTS="-i $HOME/.ssh/id_ed25519 -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o LogLevel=ERROR"
+          DEST="${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}"
+          R="skinport-data/rest/$DAY"
+          if ssh $SSH_OPTS "$DEST" "test -d ~/$R/$HOUR"; then
+            echo "Déjà archivé pour $DAY ${HOUR}h"; exit 0
+          fi
+          xz -T0 -6 raw/*.json
+          ssh $SSH_OPTS "$DEST" "mkdir -p ~/$R && rm -rf ~/$R/$HOUR.tmp"
+          scp $SSH_OPTS -r raw "$DEST:$R/$HOUR.tmp"
+          ssh $SSH_OPTS "$DEST" "mv ~/$R/$HOUR.tmp ~/$R/$HOUR"
+          echo "Archivé : $DAY ${HOUR}h ($(du -sh raw | cut -f1))"

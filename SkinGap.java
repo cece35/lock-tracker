@@ -786,6 +786,7 @@ public class SkinGap {
                     (clientId + ":" + clientSecret).getBytes(StandardCharsets.UTF_8));
         }
 
+        long fetchStart = System.currentTimeMillis();
         System.out.println("Récupération de l'historique des ventes (volume, toutes périodes)...");
         String jsonSales = fetchUrl(client, "https://api.skinport.com/v1/sales/history?app_id=730&currency=EUR");
         System.out.println("Récupération des prix actuels (avec trade-protect, pour le prix d'achat)...");
@@ -796,6 +797,23 @@ public class SkinGap {
         // précédent. Jusqu'au 18/11/2026 le "Min tradable" était donc en fait le min trade-protect
         // inclus (Min et Min (TP) identiques sur tous les items, 19 % des items concernés).
         String jsonItemsTradable = fetchUrl(client, "https://api.skinport.com/v1/items?app_id=730&currency=EUR&tradable=true");
+
+        // Archive brute facultative des trois réponses (variable SKINGAP_RAW_DIR) : le workflow en
+        // garde une copie par heure sur le VM pour recalibrer le modèle sur des semaines de données,
+        // sans appel API en plus. Noms attendus par les outils d'analyse (t0.txt = début en secondes).
+        String rawDir = System.getenv("SKINGAP_RAW_DIR");
+        if (rawDir != null && !rawDir.isBlank()) {
+            try {
+                Path d = Path.of(rawDir);
+                Files.createDirectories(d);
+                Files.writeString(d.resolve("t0.txt"), String.valueOf(fetchStart / 1000));
+                Files.writeString(d.resolve("sales.json"), jsonSales);
+                Files.writeString(d.resolve("items_g.json"), jsonItemsAll);
+                Files.writeString(d.resolve("items_t.json"), jsonItemsTradable);
+            } catch (Exception e) {
+                System.out.println("Archive brute impossible (non bloquant) : " + e);
+            }
+        }
 
         List<Object> salesList = (List<Object>) new JsonParser(jsonSales).parse();
         List<Object> itemsAllList = (List<Object>) new JsonParser(jsonItemsAll).parse();
