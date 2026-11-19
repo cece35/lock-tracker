@@ -526,13 +526,13 @@ public class SkinGap {
         static final double LAMBDA_EXP = 0.80;
 
         // Revente SOUS trade-protect : l'item, encore protégé, est vendu tout de suite (l'acheteur le
-        // reçoit à la fin de la protection). Mesuré sur le flux live du 17/11/2026 (skins) : 31 % des
-        // ventes sont des items protégés, payés tpFactor(j) × le prix tradable, j = jours de protection
-        // restants, par rapport au prix typique des ventes (0,96 à moins d'1 jour -> 0,93 à 7 jours ; par
-        // rapport au Min tradable : 0,93 -> 0,89) ; l'offre protégée la moins chère part au rythme d'une
-        // annonce tradable jugée par rapport à ce prix, × TP_KAPPA (moins d'acheteurs pour les items
-        // protégés, ramené à la moyenne de la journée).
-        static final double TP_D0 = 0.958, TP_SLOPE = 0.0035, TP_KAPPA = 0.66;
+        // reçoit à la fin de la protection). Mesuré sur le flux live (17/11/2026 au soir + 19/11 de 1 h
+        // à 14 h, heure française : 600 ventes protégées de skins, 26 % des ventes) : prix payé =
+        // tpFactor(j) × le prix typique des ventes, j = jours de protection restants (0,96 à moins d'1
+        // jour -> 0,92 à 7 jours ; par rapport au Min tradable : 0,93 -> 0,88) ; l'offre protégée la
+        // moins chère part au rythme d'une annonce tradable jugée par rapport à ce prix, × TP_KAPPA
+        // (moins d'acheteurs pour les items protégés ; moyenne de la journée pondérée par l'activité).
+        static final double TP_D0 = 0.964, TP_SLOPE = 0.006, TP_KAPPA = 0.60;
         static final double TP_DAYS_EXPORT = 7.0;     // "xt" de skins.json : protection fraîche (après un achat)
         static double tpFactor(double days) { return TP_D0 - TP_SLOPE * Math.max(0, Math.min(8, days)); }
         static final double NO_SALES_DISCOUNT = 0.20;  // aucune vente sur 90 j
@@ -1148,7 +1148,8 @@ public class SkinGap {
     <b>Très rapide</b> (par défaut) : part des <i>dernières ventes</i> (prix typique pondéré par récence et
     nombre de ventes par jour) et prend le prix le plus haut qui laisse ~80 % de chances de vendre sous
     48 h, d'après une calibration sur une journée entière de ventes réelles ; si c'est hors d'atteinte
-    (item peu liquide), le prix qui donne la meilleure chance, avec sa probabilité. Si une annonce tradable
+    (item peu liquide), le prix qui donne la meilleure chance, avec sa probabilité (moyenne sur 48 h : les
+    ventes vont ~3× plus vite le soir que la nuit, mettre en vente le soir aide). Si une annonce tradable
     concurrente est moins chère, on passe 1 centime dessous, sinon elle se vend avant : mesuré sur 24 h,
     quand le Min est sous les ventes passées, les ventes du lendemain se font au niveau du Min, pas des
     ventes passées. Le concurrent est la <i>2e</i> annonce tradable si l'on achète le Min (connue jusqu'à
@@ -1161,11 +1162,12 @@ public class SkinGap {
     celui utilisé pour l'écart ; le prix brut est affiché entre parenthèses, à titre indicatif.
     <b>Revente</b> : <b>Tradable</b> (par défaut) = prix une fois la protection finie ; <b>Sous trade-protect</b> =
     vendu tout de suite, encore protégé (l'acheteur le reçoit à la fin), moins cher : mesuré sur le flux
-    live, ~7 % de décote sous le Min tradable à moins d'1 jour de la fin, ~11 % à 7 jours (réglage
+    live, ~7 % de décote sous le Min tradable à moins d'1 jour de la fin, ~12 % à 7 jours (réglage
     "protection restante"), et moins d'acheteurs (vente plus lente). L'autre
     prix est affiché en petit à côté du prix espéré, et l'infobulle donne le gain net d'attendre la fin
     de la protection (en € et en % par jour d'attente) : pour un skin, attendre rapporte en général
-    1 à 2 %/jour, donc vendre sous trade-protect ne vaut le coup que si l'argent sert ailleurs.<br>
+    ~1,2 %/jour avec 7 jours restants, davantage quand la fin approche (~2 %/jour à 3 jours), donc
+    vendre sous trade-protect ne vaut le coup que si l'argent sert ailleurs.<br>
     <b>Écart</b> = prix de vente net − prix d'achat, choisi dans "Achat" : <b>Min tradable</b> (par défaut :
     annonce hors trade-protect, achetable maintenant) ou <b>Min (TP)</b> (offre la moins chère, trade-protect
     compris : achetable tout de suite, mais l'item n'arrive qu'à la fin de sa protection ; ces offres se
@@ -1235,7 +1237,7 @@ public class SkinGap {
         <option value="tp">Min (TP) : offre trade-protect (livrée en fin de protection)</option>
       </select>
     </div>
-    <div class="grp" title="Revendre une fois la protection finie (prix tradable) ou tout de suite, encore sous trade-protect (moins cher : ~7 % sous le Min tradable à moins d'1 jour de la fin, ~11 % à 7 jours)">
+    <div class="grp" title="Revendre une fois la protection finie (prix tradable) ou tout de suite, encore sous trade-protect (moins cher : ~7 % sous le Min tradable à moins d'1 jour de la fin, ~12 % à 7 jours)">
       <span class="lbl">Revente :</span>
       <select id="sellSel">
         <option value="tradable">Tradable (après la protection)</option>
@@ -1560,7 +1562,7 @@ function fastOf(it) {
 // Mesuré sur le flux live : les items protégés se paient tpFactor(j) × le prix tradable, j = jours
 // de protection restants ; l'offre protégée la moins chère part au rythme d'une annonce tradable
 // jugée par rapport à ce prix, × TP.KAPPA. Avec j = 7, redonne exactement "xt" de skins.json.
-const TP = { D0: 0.958, SLOPE: 0.0035, KAPPA: 0.66, LEXP: 0.80, H: 2.0, TARGET: 0.80,
+const TP = { D0: 0.964, SLOPE: 0.006, KAPPA: 0.60, LEXP: 0.80, H: 2.0, TARGET: 0.80,
   SKINS: { aMax: 0.40, rLo: 0.94, b: 3.25 }, STACK: { aMax: 0.21, rLo: 0.85, b: 1.5 } };
 function tpFactor(days) { return TP.D0 - TP.SLOPE * Math.max(0, Math.min(8, days)); }
 function famOf(it) { const c = catOf(it).toLowerCase(); return (c === "sticker" || c === "container") ? TP.STACK : TP.SKINS; }

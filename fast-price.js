@@ -40,7 +40,7 @@ const FAST = {
   NO_SALES_DISCOUNT: 0.20,
   Q_CEIL: 0.90,   // plus aucune annonce tradable après l'achat : borne au 90e centile des prix payés
   // Revente SOUS trade-protect (tout de suite) : décote = TP_D0 - TP_SLOPE × jours restants, rythme × TP_KAPPA
-  TP_D0: 0.958, TP_SLOPE: 0.0035, TP_KAPPA: 0.66,
+  TP_D0: 0.964, TP_SLOPE: 0.006, TP_KAPPA: 0.60,
 };
 
 function fastErfc(x) {

@@ -841,32 +841,86 @@ avec la même méthode (deux photos complètes à 24 h d'écart suffisent).
 ## Revente sous trade-protect : deux prix espérés (19/11/2026)
 
 Les items encore sous trade-protect peuvent être vendus tout de suite : l'acheteur les reçoit à la
-fin de la protection. Ils se vendent moins cher, d'autant plus qu'il reste de jours. Mesures sur le
-flux live du 17/11 (skins : armes, couteaux, gants, agents ; 681 ventes, dont 31 % protégées) :
+fin de la protection. Ils se vendent moins cher. Mesures sur le flux live, deux enregistrements :
+mardi 17/11 de 18 h à 21 h et jeudi 19/11 de 1 h à 14 h (heure française). Skins = armes, couteaux,
+gants, agents : 2 324 ventes, dont 600 protégées (26 %).
 
-| protection restante | prix / Min tradable | prix / prix typique des ventes |
-|---|---|---|
-| < 1 jour | 0,929 | 0,963 |
-| 1-3 jours | 0,907 | 0,940 |
-| 3-5 jours | 0,909 | 0,944 |
-| 5-6,5 jours | 0,876 | 0,945 |
-| 6,5-9 jours | 0,888 | 0,931 |
+| protection restante | ventes protégées | prix / prix typique des ventes | prix / Min tradable |
+|---|---|---|---|
+| < 1 jour | 57 | 0,934 | 0,929 |
+| 1-2 jours | 41 | 0,955 | 0,903 |
+| 2-3 jours | 40 | 0,950 | 0,906 |
+| 3-4 jours | 45 | 0,948 | 0,882 |
+| 4-5 jours | 58 | 0,959 | 0,928 |
+| 5-6 jours | 57 | 0,964 | 0,911 |
+| 6-7 jours | 140 | 0,941 | 0,876 |
+| 7-8 jours (acheté il y a moins d'un jour) | 162 | 0,902 | 0,877 |
 
-L'offre protégée la moins chère se vend au rythme d'une annonce tradable jugée par rapport à
-~0,92 × le prix typique (116 achats observés en 3 h, 117 prédits), mais il y a moins d'acheteurs :
-rapporté au rythme moyen de la journée, × 0,66.
+(Ventes tradables : 1,000 × le prix typique, 1,000 × le Min tradable.)
+
+Régression médiane sur les 600 ventes : prix ≈ `(0,964 − 0,006 × j) × prix typique des ventes`.
+Cela donne 0,96 à 0 jour et 0,92 à 7 jours, avec un intervalle à 90 % de 0,916 à 0,931 à 7 jours.
+Le premier réglage (`0,958 − 0,0035 × j`, mesuré sur la seule soirée du 17/11) surestimait le prix à
+7 jours d'environ 1 %. Entre 1 et 6 jours, les acheteurs ne paient guère plus pour une protection
+plus courte (0,95-0,96). La décote se creuse surtout pour les items revendus juste après l'achat
+(7-8 jours restants, 0,90), qui sont aussi les reventes les plus pressées.
+
+**Rythme de vente et moment de la journée.** On regarde l'offre protégée la moins chère (moins
+chère que le Min tradable) et on se demande si elle est achetée dans la fenêtre. La prévision
+utilise le modèle tradable, avec comme référence la décote à 4,8 jours (durée restante médiane des
+offres achetées), soit 0,935 × le prix typique. L'activité du moment se mesure sur le front
+tradable de tous les items : ventes observées / prévues par le modèle, calibré sur une journée
+entière.
+
+| fenêtre (heure française), skins | activité du moment | offre protégée : achetées / prévues | κ = rapport des deux |
+|---|---|---|---|
+| jeudi 1 h-3 h | × 0,50 | 34 / 89,7 = 0,38 | 0,76 |
+| jeudi 3 h-11 h (téléphone en veille, moins fiable) | × 0,42 | 83 / 337,7 = 0,25 | 0,59 |
+| jeudi 11 h-13 h | × 1,00 | 51 / 82,9 = 0,62 | 0,61 |
+| jeudi 13 h-14 h | × 1,28 | 8 / 30,6 = 0,26 | 0,20 |
+| mardi 18 h-21 h | × 1,51 | 131 / 136,8 = 0,96 | 0,63 |
+
+Une offre protégée part donc à ~0,6 × le rythme d'une annonce tradable au même prix relatif. La
+moyenne de la journée, pondérée par l'activité, donne **κ = 0,60** (intervalle à 90 % de 0,54 à
+0,67 ; skins 0,60, stickers et caisses 0,55). Le premier réglage était 0,66, mesuré sur la seule
+soirée, la plus active.
+
+Effets de l'heure :
+- **Activité** : le marché va environ 3 fois plus vite le soir que la nuit, pour les ventes
+  tradables comme protégées. Les probabilités affichées sont des moyennes sur 48 h. Mettre en vente
+  en fin d'après-midi ou le soir aide.
+- **Part des ventes protégées** : elle est plus forte la nuit (30-48 % des ventes de skins entre
+  1 h et 8 h) qu'à midi (~15 %).
+- **Prix** : la nuit, les ventes protégées se font ~3,5 % moins cher (0,89 × le prix typique avec
+  au moins 5 jours restants, contre 0,93 en journée et le soir).
+
+Le modèle ne tient pas compte de l'heure : sur 48 h, toutes les heures y passent.
+
+À noter : l'historique des ventes renvoyé par l'API (`/v1/sales/history`) était identique à l'octet
+de 1 h à 14 h le 19/11. Skinport ne le rafraîchit visiblement que rarement, et le « prix typique des
+ventes » peut donc avoir plusieurs heures de retard.
 
 Calcul du prix « Très rapide » sous trade-protect, avec `j` jours de protection restants :
-même méthode que le tradable, avec une référence `(0,958 − 0,0035 × j) × prix typique des
-ventes`, un rythme × 0,66, et un plafond 1 centime sous l'offre la moins chère (protégée ou non).
-`skins.json` donne `xt` / `xtp` pour 7 jours (protection fraîche, juste après un achat). La page
+- même méthode que le tradable ;
+- référence : `(0,964 − 0,006 × j) × prix typique des ventes` ;
+- rythme : × 0,60 ;
+- plafond : 1 centime sous l'offre la moins chère, protégée ou non.
+
+`skins.json` donne `xt` et `xtp` pour 7 jours (protection fraîche, juste après un achat). La page
 recalcule pour n'importe quel nombre de jours à partir de `xs`, `xl`, `ask` et `min`, et
-`fast-price.js` fournit `fastTpPrice` : les trois donnent le même prix au centime.
+`fast-price.js` fournit `fastTpPrice`. Les trois donnent le même prix au centime (vérifié sur
+19 129 items).
 
-Sur la page, le sélecteur « Revente » choisit le prix espéré (tradable après la protection, ou
-sous trade-protect tout de suite, avec les jours restants). L'autre prix est affiché en petit,
-et l'infobulle donne le gain net d'attendre la fin de la protection, en € et en % par jour.
-Pour un skin, attendre rapporte en général 1,5 à 3 %/jour : vendre sous trade-protect ne vaut le
-coup que si l'argent rapporte plus ailleurs (ou si le prix risque de baisser).
+Sur la page, le sélecteur « Revente » choisit le prix espéré : tradable après la protection, ou sous
+trade-protect tout de suite, avec les jours restants. L'autre prix est affiché en petit, et
+l'infobulle donne le gain net d'attendre la fin de la protection, en € et en % par jour. Pour un skin
+liquide (au moins 1 vente par jour), attendre rapporte en général ~1,2 %/jour avec 7 jours restants,
+~2 %/jour à 3 jours et ~4,5 %/jour à 1 jour. Vendre sous trade-protect ne vaut donc le coup que si
+l'argent rapporte plus ailleurs, ou si le prix risque de baisser.
 
-Limites : 3 h de flux (soirée) ; constantes à affiner avec d'autres enregistrements.
+Limites :
+- **Couverture horaire** : 15 h de flux sur deux jours ; il manque l'après-midi (14 h-18 h) et la
+  fin de soirée (21 h-1 h).
+- **Stickers et caisses** : trop peu de ventes protégées pour une décote propre. Les caisses sortent
+  à 0,88 le 19/11 mais à 0,99 le 17/11, dominées par quelques achats en gros. Elles gardent donc la
+  décote des skins.
