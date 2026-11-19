@@ -39,6 +39,8 @@ const FAST = {
   LAMBDA_EXP: 0.80,
   NO_SALES_DISCOUNT: 0.20,
   Q_CEIL: 0.90,   // plus aucune annonce tradable après l'achat : borne au 90e centile des prix payés
+  // Revente SOUS trade-protect (tout de suite) : décote = TP_D0 - TP_SLOPE × jours restants, rythme × TP_KAPPA
+  TP_D0: 0.958, TP_SLOPE: 0.0035, TP_KAPPA: 0.66,
 };
 
 function fastErfc(x) {
@@ -189,6 +191,29 @@ function fastPriceCore(sales, cap, front, ceilQ, pr) {
   return { price: p, lambda, prob48h: prob, mode, salesMedian: medPrice };
 }
 
+// Prix "Très rapide" d'un item SOUS trade-protect vendu tout de suite (l'acheteur le reçoit à la fin
+// de la protection), avec `days` jours de protection restants. Miroir de FastSellModel.computeTp :
+// avec salesMedian = "xs", lambda = "xl", L = "ask", G = "min" de skins.json et days = 7, redonne
+// exactement "xt". Renvoie null sans historique de ventes.
+function fastTpFactor(days) { return FAST.TP_D0 - FAST.TP_SLOPE * Math.max(0, Math.min(8, days)); }
+function fastTpPrice(salesMedian, lambda, L, G, days, marketPage) {
+  const med = Math.round(salesMedian * 100) / 100, lam = Math.round(lambda * 1000) / 1000;
+  if (!(med > 0) || !(L > 0)) return null;
+  const pr = fastParamsFor(marketPage);
+  const ref = med * fastTpFactor(days);
+  const cap = Math.min(L, G > 0 ? G : L) - FAST.TICK;
+  const lamEff = Math.pow(lam, FAST.LAMBDA_EXP);
+  const xStar = -Math.log(1 - FAST.TARGET_PROB);
+  const xMax = FAST.HORIZON_DAYS * lamEff * FAST.TP_KAPPA * pr.aMax;
+  const r = xMax >= xStar ? pr.rLo * Math.pow(xMax / xStar, 1 / pr.b) : pr.rLo;
+  let mode = xMax >= xStar ? "target" : "best-effort";
+  let p = ref * r;
+  if (p >= cap) { p = cap; mode += "+cap"; }
+  p = fastFloorCents(p);
+  const prob = 1 - Math.exp(-FAST.HORIZON_DAYS * lamEff * FAST.TP_KAPPA * fastAccept(p / ref, pr));
+  return { price: p, lambda: lam, prob48h: prob, mode, salesMedian: med };
+}
+
 if (typeof module !== "undefined") {
-  module.exports = { fastSellPrice, fastSellPriceAfterBuyingFront, fastSecondTradable, fastParamsFor, FAST };
+  module.exports = { fastSellPrice, fastSellPriceAfterBuyingFront, fastSecondTradable, fastParamsFor, fastTpPrice, fastTpFactor, FAST };
 }
