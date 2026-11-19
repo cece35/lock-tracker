@@ -16,7 +16,7 @@
 //
 // Quel prix utiliser ? Il ne faut jamais que l'annonce qu'on achète serve de plafond à sa propre
 // revente :
-//   - offre trade-protect achetée à son déblocage (moins chère que L) ou item déjà en inventaire :
+//   - offre trade-protect achetée (moins chère que L, revendue une fois livrée) ou item déjà en inventaire :
 //     fastSellPrice(sales, L, G, marketPage)  -> plafond 1 centime sous L ("xf" de skins.json) ;
 //   - achat de l'annonce tradable la moins chère (prix L) :
 //     fastSellPriceAfterBuyingFront(sales, L, G, tradable) -> plafond sous la 2e annonce tradable

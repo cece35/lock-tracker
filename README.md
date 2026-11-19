@@ -757,7 +757,7 @@ de ce qu'on achète :
 
 | on achète… | concurrent après l'achat | champ |
 |---|---|---|
-| une offre trade-protect moins chère que le Min tradable (achetée à son déblocage) | le Min tradable | `xf` |
+| une offre trade-protect moins chère que le Min tradable (achetable tout de suite, revendue une fois livrée) | le Min tradable | `xf` |
 | un item qu'on a déjà (dashboard) | le Min tradable | `xf` |
 | le Min tradable lui-même | la **2e** annonce tradable | `xb` |
 
@@ -775,7 +775,17 @@ son prix de revente rapide. Les écarts positifs viennent des offres trade-prote
 avaient une sous le prix net de revente rapide, dont 169 avec ≥ 50 % de chances de vente sous
 48 h (107 avec ≥ 80 %). Sur la page, le sélecteur
 « Achat » choisit le prix d'achat : « Min tradable » (achetable maintenant, par défaut) ou
-« Min (TP) » (offre trade-protect, achetable à son déblocage).
+« Min (TP) » (offre trade-protect : achetable tout de suite, l'item n'arrive qu'à la fin de sa
+protection).
+
+**Deux niveaux de prix dans l'historique des ventes.** Les items encore sous trade-protect peuvent
+être achetés : flux live du 17/11, 25 % des ventes (34-35 % pour fusils, pistolets, gants), à
+~8 % sous le prix des ventes tradables du même item sur le même créneau (rapport médian 0,917).
+Dans l'historique de l'API, elles occupent le quart bas (≈ 25e centile) ; comme les ventes
+tradables sont majoritaires, la médiane tombe sur leur niveau (vente tradable réelle / médiane de
+l'historique : 1,006 sur 79 items liquides). Le modèle garde donc la médiane comme prix typique ;
+un centile plus haut (75e) ne prédit qu'à peine mieux les ventes du lendemain (+10 de
+log-vraisemblance sur 17 903 items) et surestime le niveau tradable d'environ 5 %.
 
 **Bug corrigé le même jour :** l'appel « tradable » de l'API n'avait pas `tradable=true`. Or
 sans ce paramètre l'API renvoie toutes les annonces, trade-protect compris. Le « Min tradable »
