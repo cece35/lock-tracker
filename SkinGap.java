@@ -466,7 +466,8 @@ public class SkinGap {
     // garde R_LO·médiane (meilleure chance réelle, probabilité affichée) ; jamais au-dessus du
     // concurrent tradable - 1 centime (une annonce moins chère passerait avant). Le concurrent dépend
     // de ce qu'on revend : le Min tradable pour un item déjà possédé ou une offre trade-protect
-    // achetée à son déblocage ("xf") ; la 2e annonce tradable si l'on achète le Min lui-même ("xb").
+    // (achetable tout de suite, livrée à la fin de sa protection) ("xf") ; la 2e annonce tradable si
+    // l'on achète le Min lui-même ("xb").
     //
     // λ et la médiane viennent des 4 fenêtres Skinport (24 h / 7 j / 30 j / 90 j), qui se
     // RECOUVRENT : on les redécoupe en périodes disjointes (0-1 j, 1-7 j, 7-30 j, 30-90 j) pondérées
@@ -611,7 +612,7 @@ public class SkinGap {
         /** L = min tradable (annonces achetables tout de suite), G = min toutes annonces (trade-lock inclus). */
         // Prix "Très rapide" dans le marché actuel : il faut passer sous le Min tradable L (1 centime
         // en dessous). C'est le bon prix pour revendre un item qui n'est PAS cette annonce : item
-        // déjà en inventaire, ou offre trade-protect achetée à son déblocage (absente du marché
+        // déjà en inventaire, ou offre trade-protect (achetable tout de suite, revendue une fois livrée ; absente du marché
         // tradable, elle ne retire pas L).
         static FastPrice compute(SalesWindows s, double L, double G, Params pr) {
             if (!(L > 0)) return FastPrice.NONE;
@@ -887,7 +888,7 @@ public class SkinGap {
 
             SalesWindows windows = windowsByName.getOrDefault(name, SalesWindows.EMPTY);
             // xf : revente au marché actuel (concurrent = Min tradable) — c'est le bon prix pour une
-            // offre trade-protect achetée à son déblocage (elle n'est pas dans le marché tradable) et
+            // offre trade-protect achetée (elle n'est pas dans le marché tradable, revendue une fois livrée) et
             // pour un item déjà en inventaire. xb : revente si on achète le Min tradable lui-même
             // (concurrent = 2e annonce tradable), seulement quand l'API permet de la connaître.
             FastSellModel.Params fastParams = FastSellModel.paramsFor(mp);
@@ -1117,7 +1118,9 @@ public class SkinGap {
     celui utilisé pour l'écart ; le prix brut est affiché entre parenthèses, à titre indicatif.
     <b>Écart</b> = prix de vente net − prix d'achat, choisi dans "Achat" : <b>Min tradable</b> (par défaut :
     annonce hors trade-protect, achetable maintenant) ou <b>Min (TP)</b> (offre la moins chère, trade-protect
-    compris, achetable à son déblocage). La colonne <b>Min (TP)</b> est surlignée quand une offre
+    compris : achetable tout de suite, mais l'item n'arrive qu'à la fin de sa protection ; ces offres se
+    vendent ~8 % moins cher que les tradables, d'où les deux niveaux de prix dans l'historique des ventes).
+    La colonne <b>Min (TP)</b> est surlignée quand une offre
     trade-protect est moins chère que le Min tradable.
   </div>
 
@@ -1179,7 +1182,7 @@ public class SkinGap {
       <span class="lbl">Achat :</span>
       <select id="buySel">
         <option value="ask">Min tradable (achetable maintenant)</option>
-        <option value="tp">Min (TP) : offre trade-protect, à son déblocage</option>
+        <option value="tp">Min (TP) : offre trade-protect (livrée en fin de protection)</option>
       </select>
     </div>
     <div class="grp">
@@ -1682,7 +1685,7 @@ function render() {
     if (hasCheaperTp(r.it)) {
       tdMin.style.color = "var(--accent)";
       tdMin.title = "Offre trade-protect " + ((1 - r.it.min / r.it.ask) * 100).toFixed(1)
-        + " % sous le Min tradable (achetable à son déblocage)";
+        + " % sous le Min tradable (achetable maintenant, livrée à la fin de la protection)";
     } else {
       tdMin.style.opacity = "0.55";
       tdMin.title = "Aucune offre trade-protect sous le Min tradable";
