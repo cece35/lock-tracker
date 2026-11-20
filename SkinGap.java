@@ -1085,6 +1085,7 @@ public class SkinGap {
   .tagline { color:var(--muted); font-size:12px; margin-top:4px; }
   .navlink { color:var(--muted); font-size:12px; text-decoration:none; border:1px solid var(--border); padding:5px 10px; border-radius:3px; white-space:nowrap; }
   .navlink:hover { color:var(--accent); border-color:var(--accent-dim); }
+  .navs { display:flex; gap:8px; flex-wrap:wrap; }
   .notice { background:var(--surface); border:1px solid var(--border); border-left:2px solid var(--accent-dim); padding:10px 12px; margin:14px 0 18px; color:var(--muted); font-size:11.5px; }
   .notice b { color:var(--text); font-weight:400; }
   .notice summary { cursor:pointer; color:var(--text); }
@@ -1156,7 +1157,10 @@ public class SkinGap {
       <div class="wordmark">skin<span>gap</span></div>
       <div class="tagline">écart prix de vente espéré vs prix d'achat (Min tradable ou offre trade-protect) — __COUNT__ items — généré le __DATE__</div>
     </div>
-    <a class="navlink" id="dashLink" href="__DASHBOARD_URL__">→ dashboard</a>
+    <div class="navs">
+      <a class="navlink" href="annonces.html" title="Lots d'annonces à acheter et offres trade-protect, d'après le carnet d'annonces (flux live)">→ annonces</a>
+      <a class="navlink" id="dashLink" href="__DASHBOARD_URL__">→ dashboard</a>
+    </div>
   </header>
 
   <div class="controls">

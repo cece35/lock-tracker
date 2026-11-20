@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>skingap · annonces</title>
+<!--
+  Page « annonces » : lots d'annonces tradables et offres trade-protect, calculés à partir du carnet
+  d'annonces du VM (book.json, reconstruit depuis le flux live Skinport) et du modèle de prix de
+  skins.json (SkinGap.java). Fichier statique, sans données ni secret : il est servi dans le même dossier
+  que skingap.html (sous le chemin secret du dashboard) et lit "skins.json" et "book.json" en relatif.
+  Les constantes du modèle « Très rapide » (FS, TP) doivent rester identiques à FastSellModel
+  (SkinGap.java), à la page des prix et à fast-price.js. Tests : node annonces-test.js
+-->
+<style>
+  @import url('https://cdnjs.cloudflare.com/ajax/libs/ibm-plex/6.0.0/css/ibm-plex-mono.min.css');
+  :root {
+    --bg: #0e0d0b; --surface: #17150f; --border: #2c281f; --text: #ece7dc;
+    --muted: #8f897a; --accent: #c98a2c; --accent-dim: #8a642a;
+    --positive: #8caa7e; --negative: #b3705c;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:'IBM Plex Mono', ui-monospace, monospace; font-size:13px; line-height:1.5; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 14px 60px; }
+  header { border-bottom:1px solid var(--border); padding-bottom:14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; }
+  .wordmark { font-size:16px; } .wordmark span { color:var(--accent); }
+  .tagline { color:var(--muted); font-size:12px; margin-top:4px; }
+  .navs { display:flex; gap:8px; flex-wrap:wrap; }
+  .navlink { color:var(--muted); font-size:12px; text-decoration:none; border:1px solid var(--border); padding:5px 10px; border-radius:3px; white-space:nowrap; }
+  .navlink:hover { color:var(--accent); border-color:var(--accent-dim); }
+  .banner { background:#26150f; border:1px solid var(--negative); padding:10px 12px; margin:0 0 14px; font-size:12px; border-radius:3px; }
+  .banner a { color:var(--accent); }
+  .status { color:var(--muted); font-size:11.5px; margin:0 0 14px; }
+  .status a { color:var(--muted); cursor:pointer; text-decoration:underline; }
+  .notice { background:var(--surface); border:1px solid var(--border); border-left:2px solid var(--accent-dim); padding:10px 12px; margin:18px 0; color:var(--muted); font-size:11.5px; }
+  .notice b { color:var(--text); font-weight:400; }
+  .notice summary { cursor:pointer; color:var(--text); }
+  .notice[open] summary { margin-bottom:8px; }
+  .controls { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:14px; }
+  .grp { display:flex; align-items:center; gap:6px; }
+  .grp .lbl { color:var(--muted); font-size:11.5px; }
+  .seg { display:inline-flex; border:1px solid var(--border); border-radius:3px; overflow:hidden; }
+  .seg button { background:transparent; border:none; color:var(--muted); font-family:inherit; font-size:12px; padding:6px 10px; cursor:pointer; border-right:1px solid var(--border); }
+  .seg button:last-child { border-right:none; }
+  .seg button.active { background:var(--accent); color:#12100b; }
+  .tabs { margin-bottom:14px; }
+  .tabs button { font-size:12.5px; padding:7px 14px; }
+  input[type=text], input[type=number], select {
+    background: var(--surface); border:1px solid var(--border); color:var(--text);
+    font-family:inherit; font-size:12.5px; padding:7px 10px; border-radius:3px;
+  }
+  .search-wrap { position:relative; flex:1; min-width:160px; display:flex; }
+  .search-wrap input { flex:1; padding-right:26px; }
+  .search-clear { position:absolute; right:6px; top:50%; transform:translateY(-50%); color:var(--muted); cursor:pointer; font-size:13px; padding:2px 4px; display:none; }
+  .search-clear.show { display:block; }
+  .search-clear:hover { color:var(--accent); }
+  .reset-btn { background:var(--surface); border:1px solid var(--border); color:var(--muted); font-family:inherit; font-size:11.5px; padding:7px 10px; border-radius:3px; cursor:pointer; white-space:nowrap; }
+  .reset-btn:hover { color:var(--accent); border-color:var(--accent-dim); }
+  .count { color:var(--muted); font-size:11.5px; margin-bottom:10px; }
+  .tbl-wrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; }
+  thead th { text-align:left; color:var(--muted); font-weight:400; font-size:11px; border-bottom:1px solid var(--border); padding:6px 8px; white-space:nowrap; }
+  tbody td { padding:7px 8px; border-bottom:1px solid var(--border); vertical-align:middle; }
+  tbody tr.main:hover { background: var(--surface); }
+  .num { text-align:right; white-space:nowrap; }
+  .sub { display:block; color:var(--muted); font-size:10.5px; }
+  .pos { color:var(--positive); font-weight:600; }
+  .neg { color:var(--negative); font-weight:600; }
+  .name a { color:var(--text); text-decoration:none; }
+  .name a:hover { color:var(--accent); }
+  .name-cell { display:flex; align-items:center; gap:8px; }
+  .item-thumb { width:36px; height:27px; object-fit:contain; background:var(--surface); border-radius:3px; flex-shrink:0; }
+  .toggle { cursor:pointer; color:var(--muted); user-select:none; width:16px; text-align:center; }
+  .toggle:hover { color:var(--accent); }
+  .warn { color:var(--accent); cursor:help; }
+  .unk { color:var(--accent); }
+  tr.detail > td { background:var(--surface); padding:8px 10px 12px 30px; }
+  .detail-info { color:var(--muted); font-size:11px; margin-bottom:6px; }
+  .detail-info b { color:var(--text); font-weight:400; }
+  .detail table th, .detail table td { font-size:11.5px; padding:3px 6px; border-bottom:1px dashed var(--border); }
+  #more { display:block; margin:18px auto 0; background:var(--surface); border:1px solid var(--border); color:var(--text); font-family:inherit; padding:9px 18px; border-radius:3px; cursor:pointer; }
+  .hidden { display:none !important; }
+  footer { margin-top:26px; color:var(--muted); font-size:11px; border-top:1px solid var(--border); padding-top:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <div class="wordmark">skin<span>gap</span> · annonces</div>
+      <div class="tagline">lots d'annonces à acheter et offres trade-protect, d'après le carnet d'annonces (flux live Skinport)</div>
+    </div>
+    <div class="navs">
+      <a class="navlink" href="skingap.html">→ prix</a>
+      <a class="navlink" href="../">→ dashboard</a>
+    </div>
+  </header>
+
+  <div class="banner hidden" id="banner"></div>
+  <div class="status" id="status">Chargement du carnet et des prix…</div>
+
+  <div class="seg tabs" id="tabs">
+    <button data-t="lots" class="active">Lots tradables</button>
+    <button data-t="tp">Offres trade-protect</button>
+  </div>
+
+  <div class="controls">
+    <div class="grp" title="Gain net minimum de chaque annonce achetée (après la commission Skinport), en € ET en % du prix d'achat">
+      <span class="lbl">Marge min :</span>
+      <input type="number" id="minEur" min="0" step="0.05" style="width:62px"><span class="lbl">€ et</span>
+      <input type="number" id="minPct" min="0" step="1" style="width:54px"><span class="lbl">%</span>
+    </div>
+    <div class="grp">
+      <span class="lbl">Prix d'achat :</span>
+      <input type="number" id="priceMin" min="0" step="0.01" placeholder="min" style="width:66px">
+      <span class="lbl">–</span>
+      <input type="number" id="priceMax" min="0" step="0.01" placeholder="max" style="width:66px">
+    </div>
+    <div class="grp only-lots" title="Tout le lot doit être revendu dans ce délai (estimation moyenne)">
+      <span class="lbl">Revendu sous :</span>
+      <div class="seg" id="horizon">
+        <button data-h="24">24 h</button>
+        <button data-h="48" class="active">48 h</button>
+      </div>
+    </div>
+    <div class="grp only-lots" title="Annonces tradables pas vues dans le flux : estimées d'après le min, la médiane et la quantité de l'API (elles passent avant les nôtres à la revente), ou ignorées (lots plus optimistes)">
+      <span class="lbl">Annonces inconnues :</span>
+      <select id="unkSel">
+        <option value="estimate">estimées d'après l'API (prudent)</option>
+        <option value="ignore">ignorées</option>
+      </select>
+    </div>
+    <div class="grp only-lots" title="Coût total maximum d'un lot (vide = illimité)">
+      <span class="lbl">Budget :</span>
+      <input type="number" id="budget" min="0" step="1" placeholder="illimité" style="width:84px"><span class="lbl">€</span>
+    </div>
+    <div class="grp only-tp" title="Prudence de la marge de sécurité : z × volatilité × √(jours restants + 2). 0 = aucune marge, 1 = défaut (~16 % de cas défavorables), 2 = très prudent">
+      <span class="lbl">Prudence z :</span>
+      <input type="number" id="z" min="0" max="3" step="0.25" style="width:58px">
+    </div>
+    <div class="grp only-tp" title="Revente après la protection : probabilité estimée (modèle « Très rapide ») de revendre sous 48 h au prix visé. La marge de sécurité suppose une revente en ~2 jours : les items peu liquides restent exposés bien plus longtemps.">
+      <span class="lbl">Proba 48 h ≥</span>
+      <input type="number" id="tpProb" min="0" max="100" step="5" style="width:56px"><span class="lbl">%</span>
+    </div>
+    <div class="grp only-tp">
+      <span class="lbl">Jours restants ≤</span>
+      <input type="number" id="maxDays" min="0" max="8" step="0.5" style="width:54px">
+    </div>
+    <div class="grp only-tp">
+      <span class="lbl">Revente :</span>
+      <select id="tpSell">
+        <option value="after">après la protection (défaut)</option>
+        <option value="now">tout de suite, encore sous trade-protect</option>
+      </select>
+    </div>
+    <div class="grp">
+      <span class="lbl">Type :</span>
+      <select id="typeSel">
+        <option value="all">Tous</option>
+        <option value="normal">Normal</option>
+        <option value="st">StatTrak™</option>
+        <option value="souvenir">Souvenir</option>
+      </select>
+    </div>
+    <div class="grp">
+      <span class="lbl">Catégorie :</span>
+      <select id="catSel"><option value="">Toutes</option></select>
+    </div>
+    <div class="grp">
+      <span class="lbl">Trier :</span>
+      <select id="sortSel"></select>
+    </div>
+    <div class="search-wrap">
+      <input type="text" id="search" placeholder="Filtrer par nom..." autocomplete="off">
+      <span class="search-clear" id="searchClear" title="Effacer le filtre">✕</span>
+    </div>
+    <button type="button" id="resetFilters" class="reset-btn">↺ Réinitialiser</button>
+  </div>
+
+  <div class="count" id="count"></div>
+  <div class="tbl-wrap">
+    <table>
+      <thead id="thead"></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <button id="more" class="hidden">Afficher plus</button>
+
+  <details class="notice">
+    <summary>Comment lire cette page (lots, file d'attente, marge trade-protect…)</summary>
+    <b>Le carnet :</b> le téléphone enregistre en continu le flux live Skinport (chaque mise en vente, changement de prix
+    et vente) ; le VM en reconstruit les annonces une par une, recalées toutes les 5 min sur une photo de l'API (une
+    annonce sous le min ou au-dessus du max de l'API a disparu). Le flux ne montre une annonce que quand elle est créée
+    ou que son prix change : les annonces plus anciennes que l'enregistrement restent inconnues (colonne
+    <b>Couverture</b> = annonces connues / annonces tradables selon l'API). L'annonce la moins chère est toujours
+    connue en prix grâce à l'API, même sans avoir été vue (<span class="unk">min API</span>).<br><br>
+    <b>Lots tradables :</b> pour chaque skin, on essaie d'acheter les k annonces les moins chères (k = 1, 2, 3…) et de
+    les revendre <b>1 centime sous l'annonce suivante</b>, la première qui reste devant nous (le « mur »), sans dépasser
+    le <b>haut des ventes récentes</b> (90e centile des ventes vues dans le flux, ou à défaut le prix « Très rapide » de
+    la page des prix sans plafond) : une annonce isolée bien au-dessus des prix de vente ne compte pas comme un mur.
+    Chaque annonce achetée doit rapporter au moins la marge réglée (en € et en %, après la commission Skinport de 8 %,
+    6 % à partir de 1000 €). On garde le k qui donne le <b>plus gros gain total</b> et dont tout le lot se revend dans le
+    délai choisi (24 ou 48 h), dans la limite du budget ; si le lot ne part pas à temps, la revente est baissée (tant
+    que la marge tient).<br><br>
+    <b>Annonces inconnues :</b> le carnet ne connaît pas les annonces plus anciennes que l'enregistrement. Par défaut, on
+    estime combien d'entre elles sont moins chères que notre revente, d'après l'API (quantité, prix min, médiane des
+    annonces tradables : la moitié coûte moins que la médiane, réparties entre le min et la médiane) : elles passent
+    avant les nôtres et allongent le délai. Réglage « ignorées » : lots plus optimistes, à vérifier sur Skinport.<br><br>
+    <b>Vente estimée :</b> nos exemplaires sont mis en vente au même prix et partent l'un après l'autre (rang dans la
+    file). L'annonce en tête part au rythme du modèle « Très rapide » (calibré sur une journée de ventes réelles) :
+    λ<sup>0,8</sup> × A(prix / prix typique), λ = ventes par jour (fenêtres de l'API, complétées par les ventes vues dans
+    le flux), A diminuant quand on vend au-dessus du prix typique. Les nouvelles annonces moins chères attendues
+    (rythme mesuré dans le flux) passent devant nous, et l'activité suit l'heure de la journée (mesurée dans le flux :
+    calme la nuit, pic le soir). La fourchette affichée va du 1er au dernier exemplaire ; « lot entier » = probabilité
+    que tout parte dans le délai. Si la couverture est faible, des annonces inconnues peuvent se trouver entre nos
+    achats et le mur : elles se vendraient avant les nôtres.<br><br>
+    <b>Offres trade-protect :</b> achetables tout de suite, livrées à la fin de leur protection (jours restants exacts,
+    lus dans le carnet). Revente visée = prix « Très rapide » une fois l'item tradable (concurrent : le Min tradable).
+    <b>Écart affiché</b> = écart attendu − marge de sécurité, marge = z × σ × √(jours restants + 2) (le prix peut bouger
+    pendant la protection, plus ~2 jours pour revendre). σ = volatilité journalière du skin, provisoirement estimée à
+    partir des prix typiques des ventes sur 24 h / 7 j / 30 j / 90 j (en attendant une semaine de photos horaires).
+    Seuls les items qui ont assez de chances de partir sous 48 h une fois tradables sont affichés (« Proba 48 h », 50 %
+    par défaut) : la marge suppose une revente rapide. En option, la revente tout de suite sous trade-protect (moins
+    chère, ~7 à 12 % sous le Min tradable).<br><br>
+    <b>Flux interrompu :</b> si le carnet n'est plus alimenté, un bandeau le signale : les annonces affichées ont pu être
+    vendues entre-temps ; la page des prix (agrégats de l'API) reste à jour.
+  </details>
+
+  <footer>Données : carnet d'annonces du VM (book.json) + modèle de prix (skins.json), rechargés toutes les 3 min.</footer>
+</div>
+
+<script>
+"use strict";
+// =====================================================================================
+// Cœur du calcul (sans DOM : testé par annonces-test.js)
+// =====================================================================================
+
+// Commission Skinport prélevée au vendeur : 8 % sous 1000 €, 6 % au-delà (comme la page des prix).
+function taxRate(p) { return p < 1000 ? 0.08 : 0.06; }
+function net(p) { return p * (1 - taxRate(p)); }
+function floorCents(x) { return Math.floor(x * 100 + 1e-6) / 100; }
+
+// Modèle « Très rapide » (FastSellModel de SkinGap.java) : l'annonce TRADABLE la moins chère au prix P part
+// au taux λ^LEXP · A(P / prix typique) par jour. Constantes identiques à SkinGap.java / page des prix.
+const FS = { H: 2.0, TARGET: 0.80, LEXP: 0.80,
+  SKINS: { aMax: 0.40, rLo: 0.94, b: 3.25 }, STACK: { aMax: 0.21, rLo: 0.85, b: 1.5 } };
+const TP = { D0: 0.964, SLOPE: 0.006, KAPPA: 0.60 };
+const PRIOR_H = 72;          // poids du λ de l'API, en heures de flux équivalentes
+const SIGMA_DEFAULT = 0.03;  // volatilité journalière par défaut (3 %/jour) quand on ne peut pas l'estimer
+const SIGMA_MIN = 0.015;     // plancher : les prix typiques sont lissés, l'estimation provisoire sous-estime σ
+
+function catOf(it) {
+  try { return new URLSearchParams((it.p || "").split("?")[1] || "").get("cat") || "Autre"; }
+  catch (e) { return "Autre"; }
+}
+function itemType(name) {
+  const l = name.toLowerCase();
+  if (l.includes("stattrak")) return "st";
+  if (l.startsWith("souvenir")) return "souvenir";
+  return "normal";
+}
+function famOf(it) { const c = catOf(it).toLowerCase(); return (c === "sticker" || c === "container") ? FS.STACK : FS.SKINS; }
+function accept(r, pr) { return r <= pr.rLo ? pr.aMax : pr.aMax * Math.pow(r / pr.rLo, -pr.b); }
+
+// Ventes par jour : λ de l'API (« xl ») combiné aux ventes vues dans le flux (toutes, comme xl).
+function lambdaOf(it, b, hoursCovered) {
+  const xl = it && it.xl > 0 ? it.xl : 0;
+  const h = hoursCovered > 0 ? hoursCovered : 0;
+  const s = b && h > 0 ? (b.sales_7d || 0) : 0;
+  return (xl * PRIOR_H / 24 + s) / ((PRIOR_H + h) / 24);
+}
+// Prix typique des dernières ventes (brut) : « xs » de skins.json, sinon médiane des ventes du flux.
+function medianOf(it, b) {
+  if (it && it.xs > 0) return it.xs;
+  const q = b && b.sale_p10_p50_p90_7d;
+  return q && q[1] > 0 ? q[1] / 100 : 0;
+}
+// Plafond de revente = haut de la fourchette des ventes récentes : 90e centile des ventes tradables vues dans
+// le flux (au moins 5), sinon le prix « Très rapide » sans concurrent (~80 % de chances sous 48 h).
+function capOf(it, b, lam, m, pr) {
+  const q = b && b.sale_p10_p50_p90_7d;
+  if (b && b.sales_t_7d >= 5 && q && q[2] > 0) {
+    return { c: q[2] / 100, src: "90e centile des " + b.sales_t_7d + " ventes tradables vues dans le flux" };
+  }
+  if (!(m > 0) || !(lam > 0)) return null;
+  const xMax = FS.H * Math.pow(lam, FS.LEXP) * pr.aMax, xStar = -Math.log(1 - FS.TARGET);
+  const r = xMax >= xStar ? pr.rLo * Math.pow(xMax / xStar, 1 / pr.b) : pr.rLo;
+  return { c: floorCents(m * r), src: "prix « Très rapide » sans concurrent (prix typique " + m.toFixed(2) + " €)" };
+}
+// Rythme (ventes/jour) de l'annonce en tête de file au prix R.
+function rhoOf(R, lam, m, pr) { return Math.pow(lam, FS.LEXP) * accept(R / m, pr); }
+// Part des nouvelles annonces tradables moins chères que x (q = prix min, 10e, …, 90e centile, max).
+function fracBelow(q, x) {
+  if (!q || !q.length || x <= q[0]) return 0;
+  const n = q.length - 1;
+  if (x > q[n]) return 1;
+  for (let i = 0; i < n; i++) {
+    if (x <= q[i + 1]) {
+      const span = q[i + 1] - q[i];
+      return (i + (span > 0 ? (x - q[i]) / span : 1)) / n;
+    }
+  }
+  return 1;
+}
+// Nouvelles annonces tradables moins chères que R attendues par jour (elles passent devant les nôtres).
+function nuOf(R, b, hoursCovered) {
+  if (!b || !b.arr_t_q || !(b.arr_t_7d > 0) || !(hoursCovered > 0)) return 0;
+  return b.arr_t_7d * fracBelow(b.arr_t_q.map(x => x / 100), R) / (hoursCovered / 24);
+}
+
+// Horloge d'activité : cumul, par pas de 15 min sur 14 jours à partir de maintenant, de l'activité relative
+// (1 = moyenne) de chaque heure UTC. Sert à convertir un nombre de ventes attendu en heures réelles.
+function buildClock(profile, nowMs) {
+  const prof = (profile && profile.length === 24) ? profile.slice() : new Array(24).fill(1);
+  const mean = prof.reduce((a, x) => a + x, 0) / 24 || 1;
+  const step = 0.25, n = 14 * 24 / step;
+  const cum = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) {
+    const h = new Date(nowMs + i * step * 3600e3).getUTCHours();
+    cum[i + 1] = cum[i] + (prof[h] / mean) * step;
+  }
+  return { step, cum };
+}
+// Heures avant la j-ième vente « pour nous » au rythme moyen r (ventes/jour) ; Infinity au-delà de 14 jours.
+function hoursFor(j, r, clock) {
+  if (!(r > 0)) return Infinity;
+  const target = j * 24 / r, c = clock.cum;
+  if (target > c[c.length - 1]) return Infinity;
+  let lo = 0, hi = c.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (c[mid] < target) lo = mid; else hi = mid; }
+  const seg = c[hi] - c[lo];
+  return (lo + (seg > 0 ? (target - c[lo]) / seg : 0)) * clock.step;
+}
+// Nombre moyen de ventes « pour nous » dans les H prochaines heures.
+function salesWithin(H, r, clock) {
+  if (!(r > 0)) return 0;
+  const c = clock.cum, x = Math.min(c.length - 1, H / clock.step), lo = Math.floor(x);
+  const v = c[lo] + (lo + 1 < c.length ? (c[lo + 1] - c[lo]) * (x - lo) : 0);
+  return r * v / 24;
+}
+// P(Poisson(M) >= k) : probabilité que les k exemplaires partent.
+function probAtLeast(k, M) {
+  if (k <= 0) return 1;
+  if (!(M > 0)) return 0;
+  let term = Math.exp(-M), cdf = term;
+  for (let i = 1; i < k; i++) { term *= M / i; cdf += term; }
+  return Math.min(1, Math.max(0, 1 - cdf));
+}
+
+// Annonces tradables INCONNUES (pas vues dans le flux) moins chères que x, estimées d'après l'API : q_t annonces en
+// tout, la moins chère au min, la moitié sous la médiane des annonces (« tmed » de skins.json), réparties
+// régulièrement (en échelle log) entre les deux ; au-delà de la médiane, au moins la moitié. On retire celles qu'on
+// connaît. Ce sont des annonces qui passent avant les nôtres à la revente.
+function unknownBelow(x, b, it, L) {
+  if (!(b.q_t > 0)) return 0;
+  const mn = (b.min_t || 0) / 100, md = it.tmed > 0 ? it.tmed : 0;
+  if (!(mn > 0) || x <= mn + 1e-9) return 0;
+  const F = md > mn + 1e-9 && x < md ? 0.5 * Math.log(x / mn) / Math.log(md / mn) : 0.5;
+  let known = 0;
+  for (const u of L) if (u.p < x - 1e-9) known++;
+  return Math.max(0, b.q_t * F - known);
+}
+// Plus petit prix de revente brut qui laisse la marge minimale sur une annonce achetée au prix p.
+function minResale(p, ctx) {
+  let R = Math.ceil(Math.max(p + ctx.minEur, p * (1 + ctx.minPct / 100)) / (1 - 0.08) * 100 - 1e-6) / 100;
+  while (net(R) - p < ctx.minEur - 1e-9 || net(R) - p < p * ctx.minPct / 100 - 1e-9) R = Math.round(R * 100 + 1) / 100;
+  return R;
+}
+
+// Meilleur lot d'annonces tradables d'un skin. it = entrée de skins.json, b = entrée de book.json,
+// ctx = { minEur, minPct, horizonH, budget, hc (heures de flux), clock, unknown: "estimate" | "ignore" }.
+// Prix du carnet en centimes. Pour chaque k (les k annonces les moins chères), revente visée 1 centime sous
+// l'annonce suivante (plafonnée au haut des ventes récentes) ; si le lot ne part pas dans le délai, on baisse le
+// prix (le délai croît avec le prix) tant que la marge minimale reste respectée.
+function bestLot(it, b, ctx) {
+  if (!it || !b) return null;
+  const pr = famOf(it);
+  const lam = lambdaOf(it, b, ctx.hc);
+  const m = medianOf(it, b);
+  if (!(lam > 0) || !(m > 0)) return null;
+  const cap = capOf(it, b, lam, m, pr);
+  if (!cap || !(cap.c > 0)) return null;
+  const exported = b.tradable || [];
+  const L = exported.map(x => ({ p: x[0] / 100, age: x[1], wear: x[2], unknown: false }));
+  if (b.api_floor_t) L.push({ p: b.api_floor_t / 100, age: null, wear: null, unknown: true });
+  L.sort((x, y) => x.p - y.p);
+  if (!L.length) return null;
+  const truncated = (b.known_t || 0) > exported.length;     // le carnet n'exporte que les 40 moins chères
+  const knownAll = (b.known_t || 0) + (b.api_floor_t ? 1 : 0);
+  const complete = b.q_t > 0 && knownAll >= b.q_t;            // toutes les annonces tradables sont connues
+  const estimate = ctx.unknown !== "ignore" && !complete;
+  const H = ctx.horizonH + 1e-9;
+  let best = null, cost = 0;
+  for (let k = 1; k <= L.length; k++) {
+    cost += L[k - 1].p;
+    if (ctx.budget > 0 && cost > ctx.budget + 1e-9) break;
+    let wall, wallKind;
+    if (k < L.length) { wall = L[k].p; wallKind = L[k].unknown ? "api" : "connue"; }
+    else if (truncated) break;
+    else { wall = Infinity; wallKind = complete ? "aucune" : "inconnue"; }
+    const pk = L[k - 1].p;
+    const Rmax = floorCents(Math.min(wall - 0.01, cap.c)), Rmin = minResale(pk, ctx);
+    if (Rmin > Rmax + 1e-9) continue;
+    const at = R => {
+      const rho = rhoOf(R, lam, m, pr), nu = nuOf(R, b, ctx.hc), U = estimate ? unknownBelow(R, b, it, L) : 0;
+      return { R, rho, nu, r: rho - nu, U, T: hoursFor(U + k, rho - nu, ctx.clock) };
+    };
+    let s = at(Rmax), lowered = false;
+    if (!(s.T <= H)) {
+      if (!(at(Rmin).T <= H)) continue;
+      let lo = Math.round(Rmin * 100), hi = Math.round(Rmax * 100);   // centimes : lo tient le délai, hi non
+      while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (at(mid / 100).T <= H) lo = mid; else hi = mid; }
+      s = at(lo / 100); lowered = true;
+    }
+    const netR = net(s.R), gain = k * netR - cost;
+    if (!best || gain > best.gain + 1e-9) {
+      best = { k, R: s.R, netR, cost, gain, rho: s.rho, nu: s.nu, r: s.r, U: s.U, Tk: s.T,
+        T1: hoursFor(s.U + 1, s.r, ctx.clock),
+        pAll: probAtLeast(Math.round(s.U) + k, salesWithin(ctx.horizonH, s.r, ctx.clock)),
+        wall, wallKind, lowered, capped: !lowered && cap.c <= wall - 0.01 + 1e-9, capSrc: cap.src, cap: cap.c, lam, m };
+    }
+  }
+  if (!best) return null;
+  best.units = L.slice(0, best.k).map((u, i) => Object.assign({}, u, { gain: best.netR - u.p,
+    T: hoursFor(best.U + i + 1, best.r, ctx.clock) }));
+  best.unknownIncluded = best.units.some(u => u.unknown);
+  best.knownAll = knownAll;
+  best.coverage = b.q_t > 0 ? Math.min(1, knownAll / b.q_t) : null;
+  best.unknownCount = Math.max(0, (b.q_t || 0) - knownAll);
+  best.roi = best.cost > 0 ? best.gain / best.cost : 0;
+  return best;
+}
+
+// Volatilité journalière provisoire : écarts entre les prix typiques des ventes sur 24 h / 7 j / 30 j / 90 j
+// (âges moyens 0,5 / 3,5 / 15 / 45 jours), bornée entre 1,5 % et 10 % par jour.
+function sigmaOf(it) {
+  const pts = [[0.5, it.h24], [3.5, it.h7], [15, it.h30], [45, it.h90]].filter(x => x[1] > 0);
+  if (pts.length < 2) return { s: SIGMA_DEFAULT, src: "par défaut (pas assez de ventes)" };
+  let acc = 0;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const r = Math.log(pts[i][1] / pts[i + 1][1]);
+    acc += r * r / (pts[i + 1][0] - pts[i][0]);
+  }
+  const s = Math.sqrt(acc / (pts.length - 1));
+  return { s: Math.min(0.10, Math.max(SIGMA_MIN, s)), src: "provisoire (prix typiques des ventes 24 h / 7 j / 30 j / 90 j)" };
+}
+// Revente tout de suite SOUS trade-protect (miroir de tpOf de la page des prix / FastSellModel.computeTp).
+function tpFactor(days) { return TP.D0 - TP.SLOPE * Math.max(0, Math.min(8, days)); }
+function tpNowPrice(it, days) {
+  if (it.xs > 0 && it.ask > 0) {
+    const pr = famOf(it);
+    const ref = it.xs * tpFactor(days);
+    const cap = Math.min(it.ask, it.min > 0 ? it.min : it.ask) - 0.01;
+    const lamEff = Math.pow(it.xl || 0, FS.LEXP);
+    const xStar = -Math.log(1 - FS.TARGET), xMax = FS.H * lamEff * TP.KAPPA * pr.aMax;
+    const r = xMax >= xStar ? pr.rLo * Math.pow(xMax / xStar, 1 / pr.b) : pr.rLo;
+    return Math.max(0.01, floorCents(Math.min(ref * r, cap)));
+  }
+  return it.xf > 0 ? Math.max(0.01, floorCents(it.xf * tpFactor(days))) : 0;
+}
+// Offres trade-protect d'un skin, chacune avec sa marge de sécurité. ctx = { z, maxDays, minEur, minPct,
+// minProb (0-1 : probabilité minimale de revendre sous 48 h une fois l'item tradable, « xp »),
+// sell: "after" | "now", ageDays (âge du carnet, retiré des jours restants) }.
+// La marge suppose une revente ~2 jours après la fin de la protection : d'où le filtre sur xp.
+function tpOffers(it, b, ctx) {
+  if (!it || !b || !(b.tp && b.tp.length) || !(it.xf > 0)) return null;
+  if (ctx.sell !== "now" && ctx.minProb > 0 && !((it.xp || 0) >= ctx.minProb - 1e-9)) return null;
+  const sg = sigmaOf(it);
+  const offers = [];
+  for (const x of b.tp) {
+    const p = x[0] / 100, d = Math.max(0, x[1] - (ctx.ageDays || 0));
+    if (d > ctx.maxDays + 1e-9) continue;
+    const resale = ctx.sell === "now" ? tpNowPrice(it, d) : it.xf;
+    if (!(resale > 0)) continue;
+    const netR = net(resale);
+    const exposure = ctx.sell === "now" ? 2 : d + 2;            // jours pendant lesquels le prix peut bouger
+    const marginPct = 1 - Math.exp(-ctx.z * sg.s * Math.sqrt(exposure));
+    const gapExp = netR - p, margin = netR * marginPct, gap = gapExp - margin;
+    offers.push({ p, d, wear: x[2], resale, netR, gapExp, margin, marginPct, gap,
+      roi: gap / p, roiDay: gap / p / exposure, exposure });
+  }
+  if (!offers.length) return null;
+  offers.sort((a, c) => c.gap - a.gap);
+  const best = offers[0];
+  if (best.gap < ctx.minEur - 1e-9 || best.gap < best.p * ctx.minPct / 100 - 1e-9) return null;
+  return { sigma: sg, offers, best, prob: it.xp || 0 };
+}
+
+// État du flux à partir de book.json.
+function feedProblem(book, nowMs) {
+  if (!book) return null;
+  if (book.feed_down_since) return { since: book.feed_down_since, what: "Flux interrompu" };
+  if (book.feed_last_event && nowMs - book.feed_last_event > 15 * 60e3) return { since: book.feed_last_event, what: "Aucun événement du flux" };
+  if (book.generated && nowMs - book.generated > 10 * 60e3) return { since: book.generated, what: "Carnet pas mis à jour" };
+  return null;
+}
+
+if (typeof module !== "undefined") {
+  module.exports = { taxRate, net, floorCents, FS, TP, catOf, famOf, accept, lambdaOf, medianOf, capOf, rhoOf,
+    fracBelow, nuOf, buildClock, hoursFor, salesWithin, probAtLeast, unknownBelow, minResale, bestLot, sigmaOf, tpFactor, tpNowPrice,
+    tpOffers, feedProblem, itemType };
+}
+
+// =====================================================================================
+// Page
+// =====================================================================================
+if (typeof document !== "undefined") (function () {
+  const KEY = "skingap_annonces_v1";
+  const DEFAULTS = { tab: "lots", minEur: 0.5, minPct: 5, priceMin: null, priceMax: null, horizon: 48, budget: null,
+    z: 1, maxDays: 8, tpProb: 50, tpSell: "after", unknown: "estimate", type: "all", cat: "", sortLots: "gain", sortTp: "gap", search: "" };
+  const SORTS = {
+    lots: [["gain", "Gain total (haut → bas)"], ["roi", "ROI % (haut → bas)"], ["fast", "Vente la plus rapide"],
+      ["cost", "Coût (bas → haut)"], ["size", "Nombre d'annonces (haut → bas)"], ["name", "Nom (A-Z)"]],
+    tp: [["gap", "Écart affiché (haut → bas)"], ["roiday", "ROI par jour (haut → bas)"], ["days", "Jours restants (bas → haut)"],
+      ["price", "Prix (bas → haut)"], ["name", "Nom (A-Z)"]]
+  };
+  const PAGE = 50;
+  let S = Object.assign({}, DEFAULTS);
+  let SKINS = null, SKINS_T = 0, BOOK = null, BY_NAME = new Map(), CLOCK = null, CLOCK_T = 0;
+  let rowsCache = [], shown = PAGE, expanded = new Set(), loading = false;
+
+  try { const raw = localStorage.getItem(KEY); if (raw) Object.assign(S, JSON.parse(raw)); } catch (e) {}
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
+
+  const $ = id => document.getElementById(id);
+  const eur = x => x.toFixed(2) + " €";
+  const signed = x => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(2) + " €";
+  const pct = x => (x >= 0 ? "+" : "−") + Math.abs(x * 100).toFixed(x !== 0 && Math.abs(x) < 0.1 ? 1 : 0) + " %";
+  const hhmm = ms => new Date(ms).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  function dur(h) {
+    if (!isFinite(h)) return "—";
+    if (h < 1) return Math.max(1, Math.round(h * 60)) + " min";
+    if (h < 48) return (h < 10 ? h.toFixed(1) : Math.round(h)) + " h";
+    return Math.floor(h / 24) + " j " + Math.round(h % 24) + " h";
+  }
+  function ageTxt(min) {
+    if (min === null || min === undefined) return "—";
+    const extra = BOOK ? (Date.now() - BOOK.generated) / 60000 : 0;
+    return dur((min + extra) / 60);
+  }
+  const EXTERIOR_CODE = { "factory new": 2, "minimal wear": 4, "field-tested": 3, "well-worn": 5, "battle-scarred": 1 };
+  function buildLink(it) {   // même lien que la page des prix : marché Skinport trié par prix croissant
+    let url = it.p + (it.p.includes("?") ? "&" : "?") + "sort=price&order=asc&lock=8";
+    const l = it.n.toLowerCase();
+    for (const [label, code] of Object.entries(EXTERIOR_CODE)) if (l.includes(label)) { url += "&exterior=" + code; break; }
+    url += "&stattrak=" + (l.includes("stattrak") ? 1 : 0) + "&souvenir=" + (l.startsWith("souvenir") ? 1 : 0);
+    return url + "&stickers=0&charms=0&nametag=0&vanilla=0";
+  }
+  function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+  function cell(cls, main, sub, title) {
+    const td = el("td", cls);
+    if (main instanceof Node) td.appendChild(main); else td.appendChild(document.createTextNode(main));
+    if (sub) td.appendChild(el("span", "sub", sub));
+    if (title) td.title = title;
+    return td;
+  }
+
+  async function fetchJson(url) {
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) throw new Error(url + " : HTTP " + r.status);
+    return r.json();
+  }
+  async function load() {
+    if (loading) return;
+    loading = true;
+    try {
+      const needSkins = !SKINS || Date.now() - SKINS_T > 5 * 60e3;
+      const [sk, bk] = await Promise.all([needSkins ? fetchJson("skins.json") : null, fetchJson("book.json")]);
+      if (sk) {
+        SKINS = sk; SKINS_T = Date.now(); BY_NAME = new Map(sk.map(it => [it.n, it]));
+        const cats = [...new Set(sk.map(catOf))].sort();
+        const sel = $("catSel"), cur = S.cat;
+        sel.innerHTML = '<option value="">Toutes</option>';
+        for (const c of cats) { const o = el("option", "", c); o.value = c; sel.appendChild(o); }
+        sel.value = cats.includes(cur) ? cur : "";
+      }
+      BOOK = bk;
+      if (!CLOCK || Date.now() - CLOCK_T > 10 * 60e3 || sk) { CLOCK = buildClock(BOOK.hour_profile_utc, Date.now()); CLOCK_T = Date.now(); }
+      render();
+    } catch (e) {
+      $("status").textContent = "Impossible de charger les données : " + e.message;
+    } finally {
+      loading = false;
+    }
+  }
+
+  function passCommon(it) {
+    if (S.search && !it.n.toLowerCase().includes(S.search.toLowerCase())) return false;
+    if (S.type !== "all" && itemType(it.n) !== S.type) return false;
+    if (S.cat && catOf(it) !== S.cat) return false;
+    return true;
+  }
+
+  function computeLots() {
+    const ctx = { minEur: S.minEur || 0, minPct: S.minPct || 0, horizonH: S.horizon, budget: S.budget || 0,
+      hc: BOOK.stats_hours_covered || 0, clock: CLOCK, unknown: S.unknown };
+    const out = [];
+    for (const key in BOOK.items) {
+      const b = BOOK.items[key];
+      if (!(b.known_t > 0)) continue;
+      const it = BY_NAME.get(key);
+      if (!it || !passCommon(it)) continue;
+      const lot = bestLot(it, b, ctx);
+      if (!lot) continue;
+      if (S.priceMin !== null && lot.units[0].p < S.priceMin) continue;
+      if (S.priceMax !== null && lot.units[lot.k - 1].p > S.priceMax) continue;
+      out.push({ key, it, b, lot });
+    }
+    const by = {
+      gain: (a, c) => c.lot.gain - a.lot.gain, roi: (a, c) => c.lot.roi - a.lot.roi, fast: (a, c) => a.lot.Tk - c.lot.Tk,
+      cost: (a, c) => a.lot.cost - c.lot.cost, size: (a, c) => c.lot.k - a.lot.k || c.lot.gain - a.lot.gain,
+      name: (a, c) => a.it.n.localeCompare(c.it.n)
+    };
+    return out.sort(by[S.sortLots] || by.gain);
+  }
+
+  function computeTp() {
+    const ctx = { z: S.z, maxDays: S.maxDays, minProb: (S.tpProb || 0) / 100, minEur: S.minEur || 0, minPct: S.minPct || 0, sell: S.tpSell,
+      ageDays: (Date.now() - BOOK.generated) / 86400e3 };
+    const out = [];
+    for (const key in BOOK.items) {
+      const b = BOOK.items[key];
+      if (!(b.known_tp > 0)) continue;
+      const it = BY_NAME.get(key);
+      if (!it || !passCommon(it)) continue;
+      const t = tpOffers(it, b, ctx);
+      if (!t) continue;
+      if (S.priceMin !== null && t.best.p < S.priceMin) continue;
+      if (S.priceMax !== null && t.best.p > S.priceMax) continue;
+      out.push({ key, it, b, t });
+    }
+    const by = {
+      gap: (a, c) => c.t.best.gap - a.t.best.gap, roiday: (a, c) => c.t.best.roiDay - a.t.best.roiDay,
+      days: (a, c) => a.t.best.d - c.t.best.d, price: (a, c) => a.t.best.p - c.t.best.p,
+      name: (a, c) => a.it.n.localeCompare(c.it.n)
+    };
+    return out.sort(by[S.sortTp] || by.gap);
+  }
+
+  function renderStatus() {
+    const now = Date.now(), prob = feedProblem(BOOK, now), banner = $("banner");
+    if (prob) {
+      banner.classList.remove("hidden");
+      banner.innerHTML = "";
+      banner.append("⚠ " + prob.what + " depuis " + hhmm(prob.since) + " : le carnet n'est plus à jour, des annonces affichées ont pu être vendues entre-temps. ");
+      const a = el("a", "", "Page des prix (API, à jour)"); a.href = "skingap.html"; banner.append(a);
+    } else banner.classList.add("hidden");
+    const hc = BOOK.stats_hours_covered || 0;
+    const st = $("status");
+    st.innerHTML = "";
+    st.append("carnet de " + hhmm(BOOK.generated) + " · dernier événement du flux il y a "
+      + Math.max(0, Math.round((now - BOOK.feed_last_event) / 60000)) + " min · photo API de " + hhmm(BOOK.rest_t0)
+      + " · vitesses de vente mesurées sur " + hc + " h de flux" + (hc < 168 ? " (complètes vers 168 h)" : "") + " · ");
+    const a = el("a", "", "actualiser"); a.onclick = () => load(); st.append(a);
+  }
+
+  function setHead(cols) {
+    const tr = el("tr");
+    for (const [label, cls, title] of cols) { const th = el("th", cls || "", label); if (title) th.title = title; tr.appendChild(th); }
+    $("thead").innerHTML = ""; $("thead").appendChild(tr);
+  }
+
+  function nameCell(it, extra) {
+    const td = el("td", "name"), wrap = el("div", "name-cell");
+    if (it.i) { const img = el("img", "item-thumb"); img.src = it.i; img.alt = ""; img.loading = "lazy"; wrap.appendChild(img); }
+    const box = el("div"), a = el("a", "", it.n);
+    a.href = buildLink(it); a.target = "_blank"; a.rel = "noopener";
+    box.appendChild(a);
+    if (extra) box.appendChild(el("span", "sub", extra));
+    wrap.appendChild(box); td.appendChild(wrap);
+    return td;
+  }
+  function toggleCell(key) {
+    const td = el("td", "toggle", expanded.has(key) ? "▾" : "▸");
+    td.title = "Détail";
+    td.onclick = () => { if (expanded.has(key)) expanded.delete(key); else expanded.add(key); renderRows(); };
+    return td;
+  }
+
+  function lotRow(r, tbody) {
+    const { it, b, lot } = r, tr = el("tr", "main");
+    tr.appendChild(toggleCell(r.key));
+    tr.appendChild(nameCell(it, catOf(it) + " · ≈ " + lot.lam.toFixed(lot.lam < 10 ? 1 : 0) + " ventes/j"));
+    const lo = lot.units[0].p, hi = lot.units[lot.k - 1].p;
+    tr.appendChild(cell("num", lot.k + (lot.k > 1 ? " annonces" : " annonce"),
+      (lot.k > 1 ? eur(lo) + " → " + eur(hi) : eur(lo)) + (lot.unknownIncluded ? " · dont min API" : "")));
+    tr.appendChild(cell("num", eur(lot.cost)));
+    const wallTxt = lot.lowered ? "baissée pour partir sous " + S.horizon + " h" : lot.capped ? "plafond : haut des ventes"
+      : lot.wallKind === "connue" ? "1 ct sous " + eur(lot.wall) : lot.wallKind === "api" ? "1 ct sous le min API"
+      : "aucune annonce connue au-dessus";
+    tr.appendChild(cell("num", eur(lot.R), "net " + eur(lot.netR) + " · " + wallTxt));
+    tr.appendChild(cell("num", lot.k > 1 ? dur(lot.T1) + " – " + dur(lot.Tk) : dur(lot.Tk),
+      "lot entier < " + S.horizon + " h : " + Math.round(lot.pAll * 100) + " %"));
+    const g = cell("num", signed(lot.gain), pct(lot.roi));
+    g.classList.add(lot.gain >= 0 ? "pos" : "neg");
+    tr.appendChild(g);
+    const cov = lot.coverage === null ? "—" : Math.round(lot.coverage * 100) + " %";
+    const covTd = cell("num", cov, lot.knownAll + "/" + (b.q_t || "?") + " connues");
+    if (lot.coverage !== null && lot.coverage < 0.9) {
+      const w = el("span", "warn", " ⚠");
+      w.title = lot.unknownCount + " annonce(s) tradable(s) inconnue(s) : si certaines sont entre nos achats et la revente visée, elles se vendront avant les nôtres.";
+      covTd.firstChild.after(w);
+    }
+    tr.appendChild(covTd);
+    tbody.appendChild(tr);
+    if (!expanded.has(r.key)) return;
+    const dtr = el("tr", "detail"), dtd = el("td", "detail");
+    dtd.colSpan = 8;
+    const info = el("div", "detail-info");
+    const parts = [
+      "Revente visée " + eur(lot.R) + " (" + (lot.lowered ? "baissée sous " + (isFinite(lot.wall) ? "l'annonce suivante (" + eur(lot.wall) + ")" : "le plafond")
+          + " pour que tout le lot parte sous " + S.horizon + " h"
+        : lot.capped ? "plafond : " + lot.capSrc : lot.wallKind === "connue"
+        ? "1 centime sous l'annonce suivante, " + eur(lot.wall) + " ; plafond " + eur(lot.cap)
+        : lot.wallKind === "api" ? "1 centime sous l'annonce au min de l'API"
+        : "plafond : " + lot.capSrc) + ")",
+      lot.U >= 0.5 ? "≈ " + Math.round(lot.U) + " annonce(s) inconnue(s) moins chère(s) estimée(s) devant nous (d'après le min, la médiane et la quantité de l'API)" : "",
+      "rythme ≈ " + lot.lam.toFixed(2) + " ventes/j (" + (b.sales_7d || 0) + " vues dans le flux), prix typique " + eur(lot.m),
+      "à " + eur(lot.R) + " l'annonce en tête part ≈ " + lot.rho.toFixed(2) + " fois/j ; nouvelles annonces moins chères attendues ≈ "
+        + lot.nu.toFixed(2) + "/j",
+      "coût " + eur(lot.cost) + " → revente nette " + eur(lot.netR * lot.k) + " = " + signed(lot.gain)
+    ];
+    info.textContent = parts.filter(Boolean).join(" · ");
+    dtd.appendChild(info);
+    const t = el("table"), th = el("tr");
+    for (const h of ["Rang", "Prix", "Vue il y a", "Usure", "Gain net", "Vente estimée"]) th.appendChild(el("th", h === "Rang" ? "" : "num", h));
+    t.appendChild(th);
+    lot.units.forEach((u, i) => {
+      const ur = el("tr");
+      ur.appendChild(el("td", "", (i + 1) + "/" + lot.k));
+      const pc = cell("num", eur(u.p));
+      if (u.unknown) { pc.appendChild(el("span", "sub unk", "min API, pas vue")); }
+      ur.appendChild(pc);
+      ur.appendChild(el("td", "num", u.unknown ? "—" : ageTxt(u.age)));
+      ur.appendChild(el("td", "num", u.wear === null || u.wear === undefined ? "—" : u.wear.toFixed(4)));
+      ur.appendChild(el("td", "num " + (u.gain >= 0 ? "pos" : "neg"), signed(u.gain)));
+      ur.appendChild(el("td", "num", "≈ " + dur(u.T)));
+      t.appendChild(ur);
+    });
+    dtd.appendChild(t);
+    dtr.appendChild(dtd);
+    tbody.appendChild(dtr);
+  }
+
+  function tpRow(r, tbody) {
+    const { it, b, t } = r, o = t.best, tr = el("tr", "main");
+    tr.appendChild(toggleCell(r.key));
+    tr.appendChild(nameCell(it, catOf(it) + " · σ ≈ " + (t.sigma.s * 100).toFixed(1) + " %/j"));
+    tr.appendChild(cell("num", eur(o.p), o.wear === null || o.wear === undefined ? "" : "usure " + o.wear.toFixed(4)));
+    tr.appendChild(cell("num", o.d.toFixed(1) + " j"));
+    tr.appendChild(cell("num", eur(o.resale), "net " + eur(o.netR) + (S.tpSell === "now" ? " · tout de suite" : " · proba 48 h " + Math.round(t.prob * 100) + " %")));
+    const ge = cell("num", signed(o.gapExp)); ge.classList.add(o.gapExp >= 0 ? "pos" : "neg"); tr.appendChild(ge);
+    tr.appendChild(cell("num", "−" + eur(o.margin), (o.marginPct * 100).toFixed(1) + " % (√" + o.exposure.toFixed(1) + " j)"));
+    const g = cell("num", signed(o.gap), pct(o.roi) + " · " + pct(o.roiDay) + "/j"); g.classList.add(o.gap >= 0 ? "pos" : "neg"); tr.appendChild(g);
+    tr.appendChild(cell("num", String(t.offers.length), (b.known_tp || 0) + " connues"));
+    tbody.appendChild(tr);
+    if (!expanded.has(r.key)) return;
+    const dtr = el("tr", "detail"), dtd = el("td", "detail");
+    dtd.colSpan = 9;
+    dtd.appendChild(el("div", "detail-info", "Volatilité " + (t.sigma.s * 100).toFixed(1) + " %/jour, " + t.sigma.src
+      + " · marge = " + S.z + " × σ × √(jours d'exposition) · min tradable actuel " + eur(it.ask)));
+    const tb = el("table"), th = el("tr");
+    for (const h of ["Prix", "Jours restants", "Usure", "Revente", "Écart attendu", "Marge", "Écart affiché", "ROI/j"]) th.appendChild(el("th", h === "Prix" ? "" : "num", h));
+    tb.appendChild(th);
+    for (const x of t.offers) {
+      const ur = el("tr");
+      ur.appendChild(el("td", "", eur(x.p)));
+      ur.appendChild(el("td", "num", x.d.toFixed(1) + " j"));
+      ur.appendChild(el("td", "num", x.wear === null || x.wear === undefined ? "—" : x.wear.toFixed(4)));
+      ur.appendChild(el("td", "num", eur(x.resale)));
+      ur.appendChild(el("td", "num", signed(x.gapExp)));
+      ur.appendChild(el("td", "num", "−" + eur(x.margin)));
+      ur.appendChild(el("td", "num " + (x.gap >= 0 ? "pos" : "neg"), signed(x.gap)));
+      ur.appendChild(el("td", "num", pct(x.roiDay)));
+      tb.appendChild(ur);
+    }
+    dtd.appendChild(tb);
+    dtr.appendChild(dtd);
+    tbody.appendChild(dtr);
+  }
+
+  function renderRows() {
+    const tbody = $("rows");
+    tbody.innerHTML = "";
+    const slice = rowsCache.slice(0, shown);
+    for (const r of slice) (S.tab === "lots" ? lotRow : tpRow)(r, tbody);
+    $("more").classList.toggle("hidden", rowsCache.length <= shown);
+  }
+
+  function render() {
+    if (!BOOK || !SKINS) return;
+    renderStatus();
+    document.querySelectorAll(".only-lots").forEach(e => e.classList.toggle("hidden", S.tab !== "lots"));
+    document.querySelectorAll(".only-tp").forEach(e => e.classList.toggle("hidden", S.tab !== "tp"));
+    if (S.tab === "lots") {
+      setHead([["", ""], ["Item", ""], ["Lot", "num"], ["Coût", "num"], ["Revente visée", "num", "Prix de revente brut de chaque exemplaire (net = après commission)"],
+        ["Vente estimée", "num", "Du 1er au dernier exemplaire, et probabilité que tout le lot parte dans le délai"],
+        ["Gain net", "num"], ["Couverture", "num", "Annonces tradables connues / annonces tradables selon l'API"]]);
+      rowsCache = computeLots();
+      $("count").textContent = rowsCache.length + " lot(s) rentable(s) revendable(s) sous " + S.horizon + " h";
+    } else {
+      setHead([["", ""], ["Item", ""], ["Offre", "num"], ["Protection", "num", "Jours de protection restants"], ["Revente", "num"],
+        ["Écart attendu", "num"], ["Marge", "num", "z × σ × √(jours restants + 2)"], ["Écart affiché", "num"], ["Offres", "num", "Offres sous le seuil de jours / offres trade-protect connues"]]);
+      rowsCache = computeTp();
+      $("count").textContent = rowsCache.length + " skin(s) avec une offre trade-protect rentable après la marge de sécurité";
+    }
+    renderRows();
+  }
+
+  function syncControls() {
+    document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("active", x.dataset.t === S.tab));
+    document.querySelectorAll("#horizon button").forEach(x => x.classList.toggle("active", Number(x.dataset.h) === S.horizon));
+    $("minEur").value = S.minEur ?? ""; $("minPct").value = S.minPct ?? "";
+    $("priceMin").value = S.priceMin ?? ""; $("priceMax").value = S.priceMax ?? "";
+    $("budget").value = S.budget ?? ""; $("z").value = S.z; $("maxDays").value = S.maxDays; $("tpProb").value = S.tpProb;
+    $("tpSell").value = S.tpSell; $("unkSel").value = S.unknown; $("typeSel").value = S.type; $("catSel").value = S.cat; $("search").value = S.search;
+    $("searchClear").classList.toggle("show", !!S.search);
+    const sel = $("sortSel"); sel.innerHTML = "";
+    for (const [v, label] of SORTS[S.tab]) { const o = el("option", "", label); o.value = v; sel.appendChild(o); }
+    sel.value = S.tab === "lots" ? S.sortLots : S.sortTp;
+  }
+  function changed() { shown = PAGE; save(); render(); }
+  const numOrNull = v => (v === "" || v === null || isNaN(Number(v))) ? null : Number(v);
+
+  document.querySelectorAll("#tabs button").forEach(x => x.onclick = () => { S.tab = x.dataset.t; expanded.clear(); syncControls(); changed(); });
+  document.querySelectorAll("#horizon button").forEach(x => x.onclick = () => { S.horizon = Number(x.dataset.h); syncControls(); changed(); });
+  $("minEur").oninput = e => { S.minEur = numOrNull(e.target.value) ?? 0; changed(); };
+  $("minPct").oninput = e => { S.minPct = numOrNull(e.target.value) ?? 0; changed(); };
+  $("priceMin").oninput = e => { S.priceMin = numOrNull(e.target.value); changed(); };
+  $("priceMax").oninput = e => { S.priceMax = numOrNull(e.target.value); changed(); };
+  $("budget").oninput = e => { S.budget = numOrNull(e.target.value); changed(); };
+  $("z").oninput = e => { S.z = Math.max(0, numOrNull(e.target.value) ?? DEFAULTS.z); changed(); };
+  $("tpProb").oninput = e => { S.tpProb = Math.min(100, Math.max(0, numOrNull(e.target.value) ?? 0)); changed(); };
+  $("maxDays").oninput = e => { S.maxDays = Math.max(0, numOrNull(e.target.value) ?? DEFAULTS.maxDays); changed(); };
+  $("tpSell").onchange = e => { S.tpSell = e.target.value; changed(); };
+  $("unkSel").onchange = e => { S.unknown = e.target.value; changed(); };
+  $("typeSel").onchange = e => { S.type = e.target.value; changed(); };
+  $("catSel").onchange = e => { S.cat = e.target.value; changed(); };
+  $("sortSel").onchange = e => { if (S.tab === "lots") S.sortLots = e.target.value; else S.sortTp = e.target.value; changed(); };
+  $("search").oninput = e => { S.search = e.target.value; $("searchClear").classList.toggle("show", !!S.search); changed(); };
+  $("searchClear").onclick = () => { S.search = ""; syncControls(); changed(); };
+  $("resetFilters").onclick = () => { const tab = S.tab; S = Object.assign({}, DEFAULTS, { tab }); expanded.clear(); syncControls(); changed(); };
+  $("more").onclick = () => { shown += PAGE; renderRows(); };
+
+  syncControls();
+  load();
+  // Données rechargées toutes les 3 min (carnet) quand la page est visible, et au retour sur l'onglet.
+  setInterval(() => { if (document.visibilityState === "visible") load(); }, 3 * 60e3);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && BOOK && Date.now() - BOOK.generated > 3 * 60e3) load();
+  });
+})();
+</script>
+</body>
+</html>
