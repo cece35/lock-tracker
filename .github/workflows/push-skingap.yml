@@ -81,6 +81,33 @@ jobs:
             echo "OK — skingap.html, skins.json (et account-stats.json si présent) mis à jour sur le VM."
           '
 
+      - name: Photo du marché toutes les 5 min (sur le VM)
+        # À chaque exécution : marché tradable + marché complet (min, quantité par skin), compressés
+        # (~2 Mo), dans ~/skinport-data/rest5/AAAA-MM-JJ/HHMM/. Sert au carnet d'annonces du VM
+        # (repérer les annulations et recaler le carnet après une coupure du flux) ; le VM ne peut
+        # pas appeler l'API lui-même (bloqué par Cloudflare). On garde 7 jours (~4 Go) ; l'archive
+        # horaire complète (étape suivante) reste, elle, conservée. Ne modifie pas raw/.
+        # Non bloquant : le site est déjà à jour à cette étape.
+        continue-on-error: true
+        run: |
+          [ -s raw/t0.txt ] && [ -s raw/items_t.json ] && [ -s raw/items_g.json ] || { echo "Pas de réponses brutes"; exit 0; }
+          T=$(cat raw/t0.txt)
+          DAY=$(date -u -d "@$T" +%F); HM=$(date -u -d "@$T" +%H%M)
+          mkdir -p r5
+          xz -T0 -3 -c raw/items_t.json > r5/items_t.json.xz
+          xz -T0 -3 -c raw/items_g.json > r5/items_g.json.xz
+          cp raw/t0.txt r5/
+          SSH_OPTS="-i $HOME/.ssh/id_ed25519 -o ConnectTimeout=20 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o LogLevel=ERROR"
+          DEST="${{ secrets.VM_USER }}@${{ secrets.VM_HOST }}"
+          R="skinport-data/rest5/$DAY"
+          ssh $SSH_OPTS "$DEST" "mkdir -p ~/$R && rm -rf ~/$R/$HM.tmp"
+          scp $SSH_OPTS -r r5 "$DEST:$R/$HM.tmp"
+          # mise en place atomique (le carnet ne lit jamais une photo à moitié copiée), lien "latest",
+          # puis suppression des jours de plus de 7 jours (uniquement des dossiers AAAA-MM-JJ de rest5)
+          ssh $SSH_OPTS "$DEST" "rm -rf ~/$R/$HM && mv ~/$R/$HM.tmp ~/$R/$HM && ln -sfn $DAY/$HM ~/skinport-data/rest5/latest &&
+            find ~/skinport-data/rest5 -mindepth 1 -maxdepth 1 -type d -name '20??-??-??' -mtime +7 -exec rm -rf {} +"
+          echo "Photo 5 min : $DAY $HM ($(du -sh r5 | cut -f1))"
+
       - name: Archive horaire des réponses brutes de l'API (sur le VM)
         # Une copie par heure UTC des trois réponses de l'API (marché tradable, marché complet,
         # historique des ventes), compressée (~3 Mo), dans ~/skinport-data/rest/AAAA-MM-JJ/HH/ :
