@@ -924,3 +924,45 @@ Limites :
 - **Stickers et caisses** : trop peu de ventes protégées pour une décote propre. Les caisses sortent
   à 0,88 le 19/11 mais à 0,99 le 17/11, dominées par quelques achats en gros. Elles gardent donc la
   décote des skins.
+
+# Page « annonces » (`annonces.html`, novembre 2026)
+
+Elle est accessible par le bouton « → annonces » de la page des prix. C'est une page statique du dépôt, copiée sur le VM à chaque exécution du workflow, à côté de `skingap.html`. Elle lit en relatif deux fichiers :
+- `skins.json` : le modèle de prix ;
+- `book.json` : le carnet d'annonces du VM, reconstruit depuis le flux live Skinport et recalé toutes les 5 min sur une photo de l'API. Un lien dans le dossier des fichiers statiques du serveur pointe vers `~/skinport-data/book/book.json`.
+
+Elle ne contient ni données ni secret.
+
+## Lots tradables
+
+Pour chaque skin, la page essaie d'acheter les k annonces les moins chères.
+
+**Revente visée** : 1 centime sous l'annonce suivante (le « mur »).
+- Elle est plafonnée au haut des ventes récentes : 90e centile des ventes tradables vues dans le flux, ou à défaut le prix « Très rapide » sans concurrent.
+- Si le lot ne part pas dans le délai, la revente est baissée tant que la marge tient.
+
+**File d'attente.** Nos exemplaires partent l'un après l'autre :
+- au rythme `λ^0,8 · A(prix / prix typique)` du modèle « Très rapide » ;
+- avec λ = l'estimation de l'API complétée par les ventes vues dans le flux ;
+- modulé par l'activité selon l'heure, mesurée dans le flux.
+
+Deux sortes d'annonces passent devant nous :
+- les nouvelles annonces moins chères attendues (rythme mesuré dans le flux) ;
+- les annonces inconnues moins chères, estimées d'après l'API. La moitié des annonces coûte moins que la médiane, réparties entre le min et la médiane. Un réglage permet de les ignorer.
+
+**Choix du lot** : le k qui maximise le gain total, avec la marge minimale (en € et en %, après commission) sur chaque annonce, le délai (24 ou 48 h) et le budget.
+
+## Offres trade-protect
+
+Les jours restants de chaque offre sont exacts, lus dans le carnet.
+- **Écart affiché** = écart attendu − z·σ·√(jours restants + 2).
+- **σ** (volatilité journalière) est pour l'instant provisoire : tirée des prix typiques des ventes 24 h / 7 j / 30 j / 90 j, avec un plancher de 1,5 %/jour. Les photos horaires prendront le relais quand on aura une semaine de données.
+- **Filtre** : seuls les items revendables sous 48 h avec au moins 50 % de chances (`xp`) sont affichés.
+
+## Carnet et maintenance
+
+Un bandeau signale un flux coupé ou un carnet en retard.
+
+Les constantes du modèle (`FS`, `TP`) doivent rester identiques à `FastSellModel`, à la page des prix et à `fast-price.js`.
+
+Tests du calcul : `node annonces-test.js`.
