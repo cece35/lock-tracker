@@ -245,59 +245,145 @@ public class SkinGap {
         }
     }
 
+    // Un achat ne compte que s'il a été PAYÉ. L'API liste aussi les commandes réservées puis
+    // jamais payées (au bout de 30 min l'item est remis en vente) : même type "purchase", mais
+    // un statut autre que "complete" (doc Skinport : achat payé = "purchase" + "complete").
+    // Même règle pour les ventes ("credit"/"item") et les retraits. Un remboursement côté
+    // acheteur ("refund", une fois approuvé) annule l'achat du même sale_id ; une reprise côté
+    // vendeur ("reversal" : l'acheteur a été remboursé) annule la vente du même sale_id.
+    // "tx" reprend chaque transaction (avec "kind" = classement ci-dessous) pour la page compte.
     @SuppressWarnings("unchecked")
+    static List<Map<String, Object>> txItems(Map<String, Object> tx) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (tx.get("items") instanceof List) {
+            for (Object o : (List<Object>) tx.get("items")) {
+                if (o instanceof Map) out.add((Map<String, Object>) o);
+            }
+        }
+        return out;
+    }
+
+    static String saleKey(Map<String, Object> item) {
+        Object s = item.get("sale_id");
+        return s instanceof Number ? String.valueOf(((Number) s).longValue()) : null;
+    }
+
+    static String jsonNumOrNull(Object o) {
+        if (!(o instanceof Number)) return "null";
+        double d = ((Number) o).doubleValue();
+        if (Double.isNaN(d) || Double.isInfinite(d)) return "null";
+        return (d == Math.rint(d) && Math.abs(d) < 1e15) ? String.valueOf((long) d) : String.valueOf(d);
+    }
+
+    static String jsonStrOrNull(Object o) {
+        return o instanceof String ? "\"" + jsonEscape((String) o) + "\"" : "null";
+    }
+
     static String buildAccountStatsJson(List<Map<String, Object>> transactions, Map<String, String> imageByName,
                                         Map<String, Object> balance) {
+        // 1er passage : achats remboursés (remboursement approuvé) et ventes reprises.
+        Set<String> refundedPurchases = new HashSet<>(), reversedSales = new HashSet<>();
+        for (Map<String, Object> tx : transactions) {
+            Object type = tx.get("type");
+            boolean refund = "refund".equals(type) && !"pending".equals(tx.get("status"));
+            if (!refund && !"reversal".equals(type)) continue;
+            for (Map<String, Object> item : txItems(tx)) {
+                String k = saleKey(item);
+                if (k != null) (refund ? refundedPurchases : reversedSales).add(k);
+            }
+        }
+
         Map<String, double[]> perItem = new LinkedHashMap<>(); // name -> [achetes, vendus, depense, gagneNet]
         double totalDepense = 0, totalGagneNet = 0, totalRetire = 0, totalFrais = 0;
+        int nbReservations = 0;
+        double montantReservations = 0;
+        Map<String, Integer> statuts = new TreeMap<>(); // "type/status" -> nombre de transactions
+        StringBuilder txJson = new StringBuilder("[");
 
         for (Map<String, Object> tx : transactions) {
-            String type = (String) tx.get("type");
-            String subType = (String) tx.get("sub_type");
+            String type = tx.get("type") instanceof String ? (String) tx.get("type") : "?";
+            String subType = tx.get("sub_type") instanceof String ? (String) tx.get("sub_type") : null;
+            String status = tx.get("status") instanceof String ? (String) tx.get("status") : "?";
+            boolean complete = "complete".equals(status);
             double txFee = asDouble(tx.get("fee"));
-            totalFrais += txFee;
-
-            if ("withdraw".equals(type)) {
-                totalRetire += asDouble(tx.get("amount"));
-                continue;
-            }
-
-            List<Object> items = (List<Object>) tx.get("items");
-            if (items == null) continue;
+            statuts.merge(type + "/" + status, 1, Integer::sum);
 
             boolean isPurchase = "purchase".equals(type);
             boolean isSale = "credit".equals(type) && "item".equals(subType);
-            if (!isPurchase && !isSale) continue;
+            String kind;
+            if (isPurchase) kind = complete ? "achat" : "reservation";
+            else if (isSale) kind = complete ? "vente" : "vente-attente";
+            else if ("withdraw".equals(type)) kind = "retrait";
+            else if ("refund".equals(type)) kind = "remboursement";
+            else if ("reversal".equals(type)) kind = "reprise";
+            else kind = type;
+
+            if ("withdraw".equals(type) && complete) {
+                totalRetire += asDouble(tx.get("amount"));
+                totalFrais += txFee;
+            }
+            if (isPurchase && !complete) {
+                nbReservations++;
+                montantReservations += asDouble(tx.get("amount"));
+            }
 
             // Pour une vente, "amount" par item est BRUT (avant commission Skinport) ; la
             // commission ("fee") est portée au niveau de la transaction, pas de l'item. Quand
             // une tx groupe plusieurs items, on répartit la commission au prorata du montant
             // brut de chaque item pour obtenir un "gagné" net cohérent par item ET au global.
+            List<Map<String, Object>> items = txItems(tx);
             double txAmountTotal = 0;
             if (isSale) {
-                for (Object o : items) {
-                    txAmountTotal += asDouble(((Map<String, Object>) o).get("amount"));
-                }
+                for (Map<String, Object> item : items) txAmountTotal += asDouble(item.get("amount"));
             }
 
-            for (Object o : items) {
-                Map<String, Object> item = (Map<String, Object>) o;
-                String name = (String) item.get("market_hash_name");
+            StringBuilder itemsJson = new StringBuilder("[");
+            for (Map<String, Object> item : items) {
+                String name = String.valueOf(item.get("market_hash_name"));
                 double amount = asDouble(item.get("amount"));
-                double[] agg = perItem.computeIfAbsent(name, k -> new double[4]);
-                if (isPurchase) {
-                    agg[0] += 1;
-                    agg[2] += amount;
-                    totalDepense += amount;
-                } else {
-                    double part = txAmountTotal > 0 ? amount / txAmountTotal : 0;
-                    double net = amount - txFee * part;
-                    agg[1] += 1;
-                    agg[3] += net;
-                    totalGagneNet += net;
+                String k = saleKey(item);
+                boolean annule = k != null && ((isPurchase && refundedPurchases.contains(k))
+                        || (isSale && reversedSales.contains(k)));
+                if (complete && !annule && (isPurchase || isSale)) {
+                    double[] agg = perItem.computeIfAbsent(name, x -> new double[4]);
+                    if (isPurchase) {
+                        agg[0] += 1;
+                        agg[2] += amount;
+                        totalDepense += amount;
+                    } else {
+                        double part = txAmountTotal > 0 ? amount / txAmountTotal : 0;
+                        double net = amount - txFee * part;
+                        agg[1] += 1;
+                        agg[3] += net;
+                        totalGagneNet += net;
+                        totalFrais += txFee * part;
+                    }
                 }
+                if (itemsJson.length() > 1) itemsJson.append(',');
+                itemsJson.append("{\"sale_id\":").append(jsonNumOrNull(item.get("sale_id")))
+                        .append(",\"n\":\"").append(jsonEscape(name)).append('"')
+                        .append(",\"amount\":").append(jsonNumOrNull(item.get("amount")))
+                        .append(",\"wear\":").append(jsonNumOrNull(item.get("wear")))
+                        .append(",\"pattern\":").append(jsonNumOrNull(item.get("pattern")))
+                        .append(",\"finish\":").append(jsonNumOrNull(item.get("finish")))
+                        .append(",\"annule\":").append(annule)
+                        .append('}');
             }
+            itemsJson.append(']');
+            if (txJson.length() > 1) txJson.append(',');
+            txJson.append("{\"id\":").append(jsonNumOrNull(tx.get("id")))
+                    .append(",\"kind\":\"").append(jsonEscape(kind)).append('"')
+                    .append(",\"type\":").append(jsonStrOrNull(tx.get("type")))
+                    .append(",\"sub_type\":").append(jsonStrOrNull(subType))
+                    .append(",\"status\":").append(jsonStrOrNull(tx.get("status")))
+                    .append(",\"amount\":").append(jsonNumOrNull(tx.get("amount")))
+                    .append(",\"fee\":").append(jsonNumOrNull(tx.get("fee")))
+                    .append(",\"created_at\":").append(jsonStrOrNull(tx.get("created_at")))
+                    .append(",\"updated_at\":").append(jsonStrOrNull(tx.get("updated_at")))
+                    .append(",\"items\":").append(itemsJson)
+                    .append('}');
         }
+        txJson.append(']');
 
         List<ItemAccountStats> items = new ArrayList<>();
         for (Map.Entry<String, double[]> e : perItem.entrySet()) {
@@ -323,6 +409,16 @@ public class SkinGap {
           .append(",\"benefice\":").append(global.benefice())
           .append(",\"nbTransactions\":").append(global.nbTransactions())
           .append("}");
+        sb.append(",\"reservations\":{\"n\":").append(nbReservations)
+          .append(",\"montant\":").append(montantReservations).append("}");
+        sb.append(",\"statuts\":{");
+        boolean firstSt = true;
+        for (Map.Entry<String, Integer> e : statuts.entrySet()) {
+            if (!firstSt) sb.append(",");
+            firstSt = false;
+            sb.append("\"").append(jsonEscape(e.getKey())).append("\":").append(e.getValue());
+        }
+        sb.append("}");
         if (balance != null) {
             sb.append(",\"balance\":{")
               .append("\"current\":").append(asDouble(balance.get("current")))
@@ -344,7 +440,9 @@ public class SkinGap {
               .append(",\"img\":\"").append(jsonEscape(it.image())).append("\"")
               .append("}");
         }
-        sb.append("]}");
+        sb.append("]");
+        sb.append(",\"tx\":").append(txJson);
+        sb.append("}");
         return sb.toString();
     }
 
