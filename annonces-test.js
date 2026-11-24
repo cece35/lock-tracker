@@ -18,6 +18,7 @@ const ctx = (o) => Object.assign({ minEur: 0.5, minPct: 5, horizonH: 48, budget:
 const item = (o) => Object.assign({ n: "AK-47 | Test (Field-Tested)", p: "https://skinport.com/market?item=x&cat=Rifle",
   xl: 40, xs: 8.5, ask: 3, min: 3, xf: 2.99 }, o);
 const L = (...prices) => prices.map(p => [Math.round(p * 100), 60, 0.25]);
+const L3 = L;
 
 // Exemple de référence : 5 annonces à 3 €, puis 3,50 € et 4,30 €, puis rien jusqu'à 9 € ; ventes vers 8,5 €.
 const example = () => ({ q_t: 8, known_t: 8, tradable: L(3, 3, 3, 3, 3, 3.5, 4.3, 9), api_floor_t: null,
@@ -53,8 +54,11 @@ test("exemple : pas de lot pour un skin peu liquide (7 ventes prendraient > 48 h
   assert.strictEqual(A.bestLot(item({ xl: 3 }), example(), ctx()), null);
 });
 
-test("budget : 20 € ne suffit pas pour les 7, 25 € oui", () => {
-  assert.strictEqual(A.bestLot(item(), example(), ctx({ budget: 20 })), null);
+test("budget : 14 € ne suffit pour aucun niveau entier, 20 € pour les 6 premières, 25 € pour les 7", () => {
+  assert.strictEqual(A.bestLot(item(), example(), ctx({ budget: 14 })), null);
+  const six = A.bestLot(item(), example(), ctx({ budget: 20 }));
+  assert.strictEqual(six.k, 6);
+  near(six.R, 4.29, 1e-9, "1 ct sous l'annonce à 4,30 €");
   assert.strictEqual(A.bestLot(item(), example(), ctx({ budget: 25 })).k, 7);
 });
 
@@ -127,10 +131,12 @@ test("carnet tronqué (plus de 40 annonces connues) : jamais de lot sans mur con
   assert.strictEqual(A.bestLot(item({ xs: 3.9 }), b, ctx()), null);
 });
 
-test("marge minimale : chaque annonce achetée doit rapporter au moins la marge", () => {
-  // avec 4 € de marge minimum, la 7e (4,30 € -> 8,27 € net = +3,97 €) ne passe plus : aucun k ne convient
-  assert.strictEqual(A.bestLot(item(), example(), ctx({ minEur: 4 })), null);
-  assert.strictEqual(A.bestLot(item(), example(), ctx({ minEur: 3.9 })).k, 7);
+test("marge minimale : gain du lot en €, marge de chaque annonce en %", () => {
+  // lot des 7 : 7 × 8,27 € net − 22,80 € = +35,09 € ; la 7e (4,30 € -> 8,27 € net) rapporte +92 %
+  assert.strictEqual(A.bestLot(item(), example(), ctx({ minEur: 36 })), null);
+  assert.strictEqual(A.bestLot(item(), example(), ctx({ minEur: 35 })).k, 7);
+  assert.strictEqual(A.bestLot(item(), example(), ctx({ minPct: 100 })), null);
+  assert.strictEqual(A.bestLot(item(), example(), ctx({ minPct: 90 })).k, 7);
 });
 
 test("nouvelles annonces moins chères attendues : elles passent devant", () => {
@@ -138,6 +144,53 @@ test("nouvelles annonces moins chères attendues : elles passent devant", () => 
   assert.strictEqual(A.bestLot(item(), b, ctx({ hc: 24 })), null, "100 annonces/jour sous 8,99 € : jamais vendu");
   b.arr_t_q = b.arr_t_q.map(x => x + 1000);          // toutes au-dessus de la revente : aucun effet
   assert.strictEqual(A.bestLot(item(), b, ctx({ hc: 24 })).k, 7);
+});
+
+// Lot réel du 23/11 16:00 : 65 Recoil Case tradables à 0,13 € d'un coup, plancher du marché à 0,20 € juste avant.
+const recoil = (o) => Object.assign({ n: "Recoil Case", p: "https://skinport.com/market?item=Recoil-Case&cat=Container",
+  xl: 69, xs: 0.16, tmed: 0.65, ask: 0.13, min: 0.13, xf: 0.16 }, o);
+const recoilBook = (o) => Object.assign({ q_t: 47277, known_t: 86, min_t: 13, levels_t: [[13, 65, 10], [20, 21, 3000]],
+  tradable: new Array(40).fill(0).map(() => [13, 10, null]), api_floor_t: null, ufloor_t: 20, ufloor_age_min: 10,
+  sales_7d: 114, sales_t_7d: 114, sales_t_lv: [[13, 65], [19, 19], [20, 30]], sale_p10_p50_p90_7d: [13, 13, 20],
+  arr_t_7d: 0, arr_t_q: null }, o);
+
+test("conteneurs : vitesse de revente = moitié des ventes tradables vues à ce prix ou plus, par jour", () => {
+  const b = recoilBook();
+  near(A.fungibleRate(b, 0.19, 96), 0.5 * 49 / 4, 1e-9);       // 19 + 30 ventes ≥ 0,19 € en 4 jours
+  near(A.fungibleRate(b, 0.14, 96), 0.5 * 49 / 4, 1e-9);
+  near(A.fungibleRate(b, 0.13, 96), 0.5 * 114 / 4, 1e-9);
+  near(A.fungibleRate(b, 0.21, 96), 0, 1e-9);
+  assert.strictEqual(A.fungibleRate(b, 0.19, 12), null, "moins de 24 h de flux : modèle habituel");
+});
+
+test("niveaux de prix : un lot de 65 au même prix n'est plus caché par la limite des 40 annonces", () => {
+  const L = A.levelsOf(recoilBook());
+  assert.deepStrictEqual(L.map(l => [l.p, l.n]), [[0.13, 65], [0.2, 21]]);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(A.levelsOf({ tradable: L3(3, 3, 3.5), api_floor_t: 250 }).map(l => [l.p, l.n, l.unknown]))),
+    [[2.5, 1, true], [3, 2, false], [3.5, 1, false]], "ancien format : annonces regroupées par prix");
+  // 65 caisses × (0,19 € × 0,92 − 0,13 €) = +2,91 € ; moitié de 49 ventes ≥ 0,19 € en 4 jours : ≈ 10,6 jours
+  assert.strictEqual(A.bestLot(recoil(), recoilBook(), ctx({ hc: 96 })), null, "pas revendu sous 48 h");
+  assert.strictEqual(A.bestLot(recoil(), recoilBook(), ctx({ hc: 96, horizonH: 168 })), null, "pas sous 7 jours non plus");
+  const b = recoilBook({ sales_t_7d: 214, sales_t_lv: [[13, 65], [19, 119], [20, 30]] });   // 149 ventes ≥ 0,19 € en 4 j
+  const lot = A.bestLot(recoil(), b, ctx({ hc: 96, horizonH: 168 }));
+  assert.ok(lot, "lot sous 7 jours");
+  assert.strictEqual(lot.k, 65);
+  near(lot.R, 0.19, 1e-9, "1 ct sous les annonces connues à 0,20 €");
+  near(lot.gain, 65 * 0.19 * 0.92 - 65 * 0.13, 1e-9, "gain");
+  assert.ok(lot.emp, "vitesse mesurée dans le flux");
+  near(lot.Tk, 65 * 24 / (0.5 * 149 / 4), 1e-6, "délai du dernier exemplaire");
+  assert.strictEqual(lot.units.length, 65);
+});
+
+test("plancher des annonces inconnues : mur au-dessus d'un lot quand rien n'est connu plus haut", () => {
+  const b = recoilBook({ known_t: 65, levels_t: [[13, 65, 10]], sales_t_7d: 214, sales_t_lv: [[13, 65], [19, 119], [20, 30]] });
+  const lot = A.bestLot(recoil(), b, ctx({ hc: 96, horizonH: 168 }));
+  assert.strictEqual(lot.wallKind, "inconnues");
+  near(lot.R, 0.19, 1e-9);
+  assert.strictEqual(lot.U, 0, "aucune annonce inconnue sous le plancher");
+  // plancher relevé il y a plus de 12 h : ignoré, l'estimation prudente place des milliers d'inconnues devant
+  assert.strictEqual(A.bestLot(recoil(), Object.assign({}, b, { ufloor_age_min: 800 }),
+    ctx({ hc: 96, horizonH: 168 })), null);
 });
 
 test("λ : API et flux combinés selon les heures de flux", () => {
