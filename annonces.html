@@ -81,6 +81,43 @@
   #more { display:block; margin:18px auto 0; background:var(--surface); border:1px solid var(--border); color:var(--text); font-family:inherit; padding:9px 18px; border-radius:3px; cursor:pointer; }
   .hidden { display:none !important; }
   footer { margin-top:26px; color:var(--muted); font-size:11px; border-top:1px solid var(--border); padding-top:12px; }
+  .filters-btn { display:none; }
+  .tip { display:none; position:fixed; left:10px; right:10px; bottom:12px; z-index:50; background:var(--surface); border:1px solid var(--accent-dim); border-radius:4px; padding:10px 12px; font-size:12px; line-height:1.45; box-shadow:0 4px 18px rgba(0,0,0,.55); }
+  .tip.show { display:block; }
+  /* Téléphone (ou fenêtre étroite) : même page, mise en page mobile. Les filtres se replient derrière
+     le bouton « Filtres » (onglets, recherche et tri restent visibles) et chaque ligne devient une
+     fiche, avec l'intitulé de la colonne au-dessus de chaque valeur (data-l, voir renderRows). */
+  @media (max-width: 900px) {
+    .wrap { padding:14px 12px 40px; }
+    header { padding-bottom:10px; margin-bottom:12px; }
+    .tagline { font-size:11px; }
+    .navlink { padding:7px 12px; }
+    .tabs { display:flex; }
+    .tabs button { flex:1 1 0; padding:8px 6px; }
+    .controls { gap:8px; }
+    .search-wrap { order:-2; flex:1 1 0; min-width:0; }
+    .filters-btn { display:block; order:-1; }
+    .controls > .grp { flex:1 1 100%; flex-wrap:wrap; min-width:0; }
+    .controls > .grp > span.lbl:first-child { flex:0 0 38%; }
+    .controls > .grp select { flex:1 1 50%; min-width:0; max-width:100%; }
+    #resetFilters { flex:1 1 100%; }
+    body:not(.filters-open) .controls > .grp:not(.keep),
+    body:not(.filters-open) #resetFilters { display:none; }
+    .tbl-wrap { overflow:visible; }
+    table.list, table.list > tbody { display:block; }
+    table.list > thead { display:none; }
+    table.list > tbody > tr.main { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:7px 10px; padding:11px 2px; border-bottom:1px solid var(--border); }
+    table.list > tbody > tr.main > td { display:block; padding:0; border:none; text-align:left; white-space:normal; min-width:0; }
+    table.list > tbody > tr.main > td.name { grid-area:1 / 1 / 2 / 3; }
+    table.list > tbody > tr.main > td.toggle { grid-area:1 / 3 / 2 / 4; justify-self:end; align-self:start; width:auto; border:1px solid var(--border); border-radius:3px; padding:3px 9px; white-space:nowrap; }
+    table.list > tbody > tr.main > td.toggle::after { content:" détail"; font-size:11px; }
+    table.list > tbody > tr.main > td[data-l]::before { content:attr(data-l); display:block; color:var(--muted); font-size:10.5px; font-weight:400; line-height:1.4; }
+    table.list > tbody > tr.detail { display:block; }
+    table.list > tbody > tr.detail > td { display:block; padding:8px 10px 12px; }
+    .detail table { display:block; overflow-x:auto; }
+    .detail table th, .detail table td { white-space:nowrap; }
+    .item-thumb { width:44px; height:33px; }
+  }
 </style>
 </head>
 <body>
@@ -166,10 +203,11 @@
       <span class="lbl">Catégorie :</span>
       <select id="catSel"><option value="">Toutes</option></select>
     </div>
-    <div class="grp">
+    <div class="grp keep">
       <span class="lbl">Trier :</span>
       <select id="sortSel"></select>
     </div>
+    <button type="button" id="filtersBtn" class="reset-btn filters-btn">⚙ Filtres</button>
     <div class="search-wrap">
       <input type="text" id="search" placeholder="Filtrer par nom..." autocomplete="off">
       <span class="search-clear" id="searchClear" title="Effacer le filtre">✕</span>
@@ -179,7 +217,7 @@
 
   <div class="count" id="count"></div>
   <div class="tbl-wrap">
-    <table>
+    <table class="list">
       <thead id="thead"></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -654,7 +692,9 @@ if (typeof document !== "undefined") (function () {
     const a = el("a", "", "actualiser"); a.onclick = () => load(); st.append(a);
   }
 
+  let HEAD = [];
   function setHead(cols) {
+    HEAD = cols;
     const tr = el("tr");
     for (const [label, cls, title] of cols) { const th = el("th", cls || "", label); if (title) th.title = title; tr.appendChild(th); }
     $("thead").innerHTML = ""; $("thead").appendChild(tr);
@@ -784,10 +824,23 @@ if (typeof document !== "undefined") (function () {
     tbody.innerHTML = "";
     const slice = rowsCache.slice(0, shown);
     for (const r of slice) (S.tab === "lots" ? lotRow : tpRow)(r, tbody);
+    // Intitulé de colonne sur chaque cellule : affiché au-dessus de la valeur dans les fiches mobiles (CSS @media).
+    for (const tr of tbody.querySelectorAll(":scope > tr.main"))
+      [...tr.children].forEach((td, i) => { if (HEAD[i] && HEAD[i][0] && !td.classList.contains("name")) td.dataset.l = HEAD[i][0]; });
     $("more").classList.toggle("hidden", rowsCache.length <= shown);
   }
 
+  // Mobile : filtres repliés derrière le bouton « Filtres » (CSS @media), qui indique combien de
+  // filtres de l'onglet courant diffèrent des réglages par défaut.
+  const FKEYS = { all: ["minEur", "minPct", "priceMin", "priceMax", "type", "cat"],
+    lots: ["horizon", "unknown", "budget"], tp: ["z", "tpProb", "maxDays", "tpSell"] };
+  function updateFiltersBtn() {
+    const n = FKEYS.all.concat(FKEYS[S.tab] || []).filter(k => (S[k] ?? null) !== (DEFAULTS[k] ?? null)).length;
+    $("filtersBtn").textContent = "⚙ Filtres" + (n ? " (" + n + ")" : "") + (document.body.classList.contains("filters-open") ? " ▴" : " ▾");
+  }
+
   function render() {
+    updateFiltersBtn();
     if (!BOOK || !SKINS) return;
     renderStatus();
     document.querySelectorAll(".only-lots").forEach(e => e.classList.toggle("hidden", S.tab !== "lots"));
@@ -841,8 +894,31 @@ if (typeof document !== "undefined") (function () {
   $("searchClear").onclick = () => { S.search = ""; syncControls(); changed(); };
   $("resetFilters").onclick = () => { const tab = S.tab; S = Object.assign({}, DEFAULTS, { tab }); expanded.clear(); syncControls(); changed(); };
   $("more").onclick = () => { shown += PAGE; renderRows(); };
+  $("filtersBtn").onclick = () => {
+    const open = document.body.classList.toggle("filters-open");
+    try { sessionStorage.setItem("annonces_filters_open", open ? "1" : ""); } catch (e) {}
+    updateFiltersBtn();
+  };
+  try { if (sessionStorage.getItem("annonces_filters_open")) document.body.classList.add("filters-open"); } catch (e) {}
+
+  // Écran tactile : pas de survol, donc les explications en infobulle (attribut title) ne
+  // s'affichaient jamais. Un appui sur un élément qui en a une l'affiche en bas de l'écran.
+  if (window.matchMedia && matchMedia("(hover: none)").matches) {
+    const tip = el("div", "tip");
+    document.body.appendChild(tip);
+    let tipTimer = null;
+    document.addEventListener("click", e => {
+      const t = e.target.closest("[title]");
+      if (!t || !t.title || e.target.closest("a, button, input, select, textarea, .toggle")) { tip.classList.remove("show"); return; }
+      tip.textContent = t.title;
+      tip.classList.add("show");
+      clearTimeout(tipTimer);
+      tipTimer = setTimeout(() => tip.classList.remove("show"), 6000);
+    });
+  }
 
   syncControls();
+  updateFiltersBtn();
   load();
   // Données rechargées toutes les 3 min (carnet) quand la page est visible, et au retour sur l'onglet.
   setInterval(() => { if (document.visibilityState === "visible") load(); }, 3 * 60e3);
