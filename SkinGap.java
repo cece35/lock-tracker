@@ -1246,6 +1246,52 @@ public class SkinGap {
   .reset-btn:hover { color:var(--accent); border-color:var(--accent-dim); }
   #more { display:block; margin:18px auto 0; background:var(--surface); border:1px solid var(--border); color:var(--text); font-family:inherit; padding:9px 18px; border-radius:3px; cursor:pointer; }
   footer { margin-top:26px; color:var(--muted); font-size:11px; border-top:1px solid var(--border); padding-top:12px; }
+  .filters-btn { display:none; }
+  .tip { display:none; position:fixed; left:10px; right:10px; bottom:12px; z-index:50; background:var(--surface); border:1px solid var(--accent-dim); border-radius:4px; padding:10px 12px; font-size:12px; line-height:1.45; box-shadow:0 4px 18px rgba(0,0,0,.55); }
+  .tip.show { display:block; }
+  /* Téléphone (ou fenêtre étroite) : même page, mise en page mobile. Les filtres se replient derrière
+     le bouton « Filtres » (la recherche et le tri restent visibles) et chaque ligne du tableau devient
+     une fiche. Les règles td:nth-child suivent l'ordre des colonnes créées par render(). */
+  @media (max-width: 900px) {
+    .wrap { padding:14px 12px 40px; }
+    header { padding-bottom:10px; margin-bottom:12px; }
+    .tagline { font-size:11px; }
+    .navlink { padding:7px 12px; }
+    .controls { gap:8px; }
+    .search-wrap { order:-2; flex:1 1 0; min-width:0; }
+    .filters-btn { display:block; order:-1; }
+    .controls > .grp { flex:1 1 100%; flex-wrap:wrap; min-width:0; }
+    .controls > .grp > span.lbl:first-child { flex:0 0 38%; }
+    .controls > .grp select { flex:1 1 50%; min-width:0; max-width:100%; }
+    #resetFilters { flex:1 1 100%; }
+    body:not(.filters-open) .controls > .grp:not(.keep),
+    body:not(.filters-open) #resetFilters,
+    body:not(.filters-open) .cat-block { display:none; }
+    table, tbody { display:block; }
+    thead { display:none; }
+    #rows tr { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:7px 8px; padding:11px 2px; border-bottom:1px solid var(--border); }
+    #rows td { display:block; padding:0; border:none; text-align:left; min-width:0; }
+    #rows td.num { white-space:normal; }
+    #rows td:nth-child(1) { grid-area:1 / 1 / 2 / 4; }
+    #rows td:nth-child(9) { grid-area:1 / 4 / 2 / 5; text-align:right; white-space:nowrap; }
+    #rows td:nth-child(2) { grid-area:2 / 1 / 3 / 3; }
+    #rows td:nth-child(3) { grid-area:2 / 3 / 3 / 4; }
+    #rows td:nth-child(4) { grid-area:2 / 4 / 3 / 5; }
+    #rows td:nth-child(5) { grid-area:3 / 1 / 4 / 2; }
+    #rows td:nth-child(6) { grid-area:3 / 2 / 4 / 3; }
+    #rows td:nth-child(7) { grid-area:3 / 3 / 4 / 4; }
+    #rows td:nth-child(8) { grid-area:3 / 4 / 4 / 5; }
+    #rows td::before { display:block; color:var(--muted); font-size:10.5px; font-weight:400; line-height:1.4; }
+    #rows td:nth-child(2)::before { content:"Prix espéré"; }
+    #rows td:nth-child(3)::before { content:"Volume"; }
+    #rows td:nth-child(4)::before { content:"Stock"; }
+    #rows td:nth-child(5)::before { content:"Min"; }
+    #rows td:nth-child(6)::before { content:"Min (TP)"; }
+    #rows td:nth-child(7)::before { content:"Écart"; }
+    #rows td:nth-child(8)::before { content:"ROI"; }
+    .item-thumb { width:44px; height:33px; }
+    .detail-link, .skin-link { display:inline-block; font-size:18px; padding:0 4px; }
+  }
 </style>
 </head>
 <body>
@@ -1345,7 +1391,7 @@ public class SkinGap {
         <option value="hide">Masquer</option>
       </select>
     </div>
-    <div class="grp">
+    <div class="grp keep">
       <span class="lbl">Trier :</span>
       <select id="sortSel">
         <option value="gap_desc">Écart (haut → bas)</option>
@@ -1364,6 +1410,7 @@ public class SkinGap {
         <option value="cat_asc">Catégorie (A-Z)</option>
       </select>
     </div>
+    <button type="button" id="filtersBtn" class="reset-btn filters-btn">⚙ Filtres</button>
     <div class="search-wrap">
       <input type="text" id="search" placeholder="Filtrer par nom..." list="itemNamesList" autocomplete="off">
       <datalist id="itemNamesList"></datalist>
@@ -1811,6 +1858,7 @@ function computeRows() {
 }
 
 function render() {
+  updateFiltersBtn();
   const rows = computeRows();
   document.getElementById("count").textContent = rows.length + " item(s) correspondant(s)";
   const tbody = document.getElementById("rows");
@@ -2266,6 +2314,48 @@ async function loadPriceDrops() {
 // (liste native <datalist>, pas de fetch supplémentaire : DATA est déjà chargé).
 document.getElementById("itemNamesList").innerHTML =
   DATA.map(it => `<option value="${it.n.replace(/"/g, "&quot;")}"></option>`).join("");
+
+// Mobile : les filtres sont repliés derrière le bouton « Filtres » (CSS @media), qui indique combien
+// sont actifs. L'ouverture est gardée pour la session (la page se recharge toutes les 5 min).
+var catCount = null;
+function activeFilterCount() {
+  if (catCount === null) catCount = new Set(DATA.map(catOf)).size;
+  const D = FILTER_DEFAULTS;
+  return [volPeriod !== D.volPeriod, Number(minVol) > 0, priceMin > 0 || priceMax !== Infinity,
+    gapMin !== -Infinity || gapMax !== Infinity, roiMin !== -Infinity || roiMax !== Infinity, probMin > 0,
+    typeFilter !== D.typeFilter, priceMode !== D.priceMode, buyMode !== D.buyMode, sellMode !== D.sellMode,
+    hideAlerted, newLowFilter !== D.newLowFilter, !!selectedCats && selectedCats.size < catCount].filter(Boolean).length;
+}
+function updateFiltersBtn() {
+  const n = activeFilterCount(), open = document.body.classList.contains("filters-open");
+  document.getElementById("filtersBtn").textContent = "⚙ Filtres" + (n ? " (" + n + ")" : "") + (open ? " ▴" : " ▾");
+}
+document.getElementById("filtersBtn").addEventListener("click", () => {
+  const open = document.body.classList.toggle("filters-open");
+  try { sessionStorage.setItem("skingap_filters_open", open ? "1" : ""); } catch (e) {}
+  updateFiltersBtn();
+});
+try { if (sessionStorage.getItem("skingap_filters_open")) document.body.classList.add("filters-open"); } catch (e) {}
+
+// Écran tactile : pas de survol, donc les explications en infobulle (attribut title) ne
+// s'affichaient jamais. Un appui sur un élément qui en a une l'affiche en bas de l'écran.
+if (window.matchMedia && matchMedia("(hover: none)").matches) {
+  const tip = document.createElement("div");
+  tip.className = "tip";
+  document.body.appendChild(tip);
+  let tipTimer = null;
+  document.addEventListener("click", (e) => {
+    const el = e.target.closest("[title]");
+    if (!el || !el.title || e.target.closest("a, button, input, select, textarea, .med-val, .reset-med")) {
+      tip.classList.remove("show");
+      return;
+    }
+    tip.textContent = el.title;
+    tip.classList.add("show");
+    clearTimeout(tipTimer);
+    tipTimer = setTimeout(() => tip.classList.remove("show"), 6000);
+  });
+}
 
 const savedFilters = loadFilters();
 if (savedFilters) applySavedFilters(savedFilters);
