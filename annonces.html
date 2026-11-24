@@ -142,10 +142,10 @@
   </div>
 
   <div class="controls">
-    <div class="grp" title="Gain net minimum de chaque annonce achetée (après la commission Skinport), en € ET en % du prix d'achat">
-      <span class="lbl">Marge min :</span>
-      <input type="number" id="minEur" min="0" step="0.05" style="width:62px"><span class="lbl">€ et</span>
-      <input type="number" id="minPct" min="0" step="1" style="width:54px"><span class="lbl">%</span>
+    <div class="grp" title="Gain net minimum du lot entier (ou de l'offre trade-protect), après la commission Skinport, et marge minimale de chaque annonce achetée, en % de son prix">
+      <span class="lbl">Gain min :</span>
+      <input type="number" id="minEur" min="0" step="0.05" style="width:62px"><span class="lbl">€ par lot, marge</span>
+      <input type="number" id="minPct" min="0" step="1" style="width:54px"><span class="lbl">% par annonce</span>
     </div>
     <div class="grp">
       <span class="lbl">Prix d'achat :</span>
@@ -158,6 +158,7 @@
       <div class="seg" id="horizon">
         <button data-h="24">24 h</button>
         <button data-h="48" class="active">48 h</button>
+        <button data-h="168">7 j</button>
       </div>
     </div>
     <div class="grp only-lots" title="Annonces tradables pas vues dans le flux : estimées d'après le min, la médiane et la quantité de l'API (elles passent avant les nôtres à la revente), ou ignorées (lots plus optimistes)">
@@ -232,23 +233,30 @@
     ou que son prix change : les annonces plus anciennes que l'enregistrement restent inconnues (colonne
     <b>Couverture</b> = annonces connues / annonces tradables selon l'API). L'annonce la moins chère est toujours
     connue en prix grâce à l'API, même sans avoir été vue (<span class="unk">min API</span>).<br><br>
-    <b>Lots tradables :</b> pour chaque skin, on essaie d'acheter les k annonces les moins chères (k = 1, 2, 3…) et de
-    les revendre <b>1 centime sous l'annonce suivante</b>, la première qui reste devant nous (le « mur »), sans dépasser
-    le <b>haut des ventes récentes</b> (90e centile des ventes vues dans le flux, ou à défaut le prix « Très rapide » de
-    la page des prix sans plafond) : une annonce isolée bien au-dessus des prix de vente ne compte pas comme un mur.
-    Chaque annonce achetée doit rapporter au moins la marge réglée (en € et en %, après la commission Skinport de 8 %,
-    6 % à partir de 1000 €). On garde le k qui donne le <b>plus gros gain total</b> et dont tout le lot se revend dans le
-    délai choisi (24 ou 48 h), dans la limite du budget ; si le lot ne part pas à temps, la revente est baissée (tant
-    que la marge tient).<br><br>
+    <b>Lots tradables :</b> pour chaque skin, on essaie d'acheter les annonces les moins chères, prix par prix (toutes
+    celles d'un même prix : en laisser au même prix les ferait passer avant les nôtres), et de les revendre
+    <b>1 centime sous le prix suivant</b> (le « mur ») : l'annonce connue suivante, ou le reste du marché, c'est-à-dire
+    les annonces que le carnet ne connaît pas, dont l'API donne le prix plancher, relevé avant qu'un lot pas cher arrive
+    et le cache. La revente ne dépasse pas le <b>haut des ventes récentes</b> (90e centile des ventes vues dans le flux,
+    ou à défaut le prix « Très rapide » de la page des prix sans plafond) : une annonce isolée bien au-dessus des prix de
+    vente ne compte pas comme un mur. Le lot doit rapporter au moins le <b>gain minimum</b> réglé (en €, après la
+    commission Skinport de 8 %, 6 % à partir de 1000 €) et chaque annonce achetée au moins la <b>marge</b> réglée (en %).
+    On garde le lot qui donne le <b>plus gros gain total</b> et dont tout se revend dans le délai choisi (24 h, 48 h ou
+    7 jours), dans la limite du budget ; si le lot ne part pas à temps, la revente est baissée (tant que la marge
+    tient).<br><br>
     <b>Annonces inconnues :</b> le carnet ne connaît pas les annonces plus anciennes que l'enregistrement. Par défaut, on
-    estime combien d'entre elles sont moins chères que notre revente, d'après l'API (quantité, prix min, médiane des
-    annonces tradables : la moitié coûte moins que la médiane, réparties entre le min et la médiane) : elles passent
-    avant les nôtres et allongent le délai. Réglage « ignorées » : lots plus optimistes, à vérifier sur Skinport.<br><br>
+    estime combien d'entre elles sont moins chères que notre revente, d'après l'API (quantité, prix plancher, médiane
+    des annonces tradables : la moitié coûte moins que la médiane, réparties entre le plancher et la médiane) : elles
+    passent avant les nôtres et allongent le délai. Sous le plancher relevé il y a moins de 12 h, il n'y en a pas.
+    Réglage « ignorées » : lots plus optimistes, à vérifier sur Skinport.<br><br>
     <b>Vente estimée :</b> nos exemplaires sont mis en vente au même prix et partent l'un après l'autre (rang dans la
-    file). L'annonce en tête part au rythme du modèle « Très rapide » (calibré sur une journée de ventes réelles) :
+    file). <b>Caisses, capsules et stickers</b> (exemplaires identiques : l'acheteur prend le moins cher, souvent par
+    lots) : vitesse = la moitié des ventes tradables vues dans le flux sur 7 jours à notre prix ou plus, par jour
+    (au backtest du 20 au 24/11, les reventes ont été environ deux fois plus lentes que ces ventes passées). <b>Skins</b> :
+    l'annonce en tête part au rythme du modèle « Très rapide » (calibré sur une journée de ventes réelles) :
     λ<sup>0,8</sup> × A(prix / prix typique), λ = ventes par jour (fenêtres de l'API, complétées par les ventes vues dans
-    le flux), A diminuant quand on vend au-dessus du prix typique. Les nouvelles annonces moins chères attendues
-    (rythme mesuré dans le flux) passent devant nous, et l'activité suit l'heure de la journée (mesurée dans le flux :
+    le flux), A diminuant quand on vend au-dessus du prix typique ; les nouvelles annonces moins chères attendues
+    (rythme mesuré dans le flux) passent devant nous. L'activité suit l'heure de la journée (mesurée dans le flux :
     calme la nuit, pic le soir). La fourchette affichée va du 1er au dernier exemplaire ; « lot entier » = probabilité
     que tout parte dans le délai. Si la couverture est faible, des annonces inconnues peuvent se trouver entre nos
     achats et le mur : elles se vendraient avant les nôtres.<br><br>
@@ -385,17 +393,60 @@ function probAtLeast(k, M) {
   return Math.min(1, Math.max(0, 1 - cdf));
 }
 
+// Niveaux de prix tradables connus, du moins cher au plus cher : [{ p, n, age, unknown }]. book.json récent :
+// « levels_t » = [prix_c, nombre, âge de la plus ancienne] (un lot de 65 caisses au même prix tenait avant les 40
+// places de « tradable » et cachait le prix suivant) ; ancien format : « tradable » regroupé par prix. L'annonce
+// inconnue au min de l'API (« api_floor_t ») est un niveau d'un exemplaire.
+function levelsOf(b) {
+  let L;
+  if (b.levels_t) L = b.levels_t.map(x => ({ p: x[0] / 100, n: x[1], age: x[2], unknown: false }));
+  else {
+    const m = new Map();
+    for (const x of b.tradable || []) {
+      const p = x[0] / 100, e = m.get(p);
+      if (e) { e.n++; e.age = Math.max(e.age, x[1]); } else m.set(p, { p, n: 1, age: x[1], unknown: false });
+    }
+    L = [...m.values()];
+  }
+  if (b.api_floor_t) L.push({ p: b.api_floor_t / 100, n: 1, age: null, unknown: true });
+  return L.sort((x, y) => x.p - y.p);
+}
+// Plancher des annonces tradables que le carnet ne connaît pas (« ufloor_t », relevé sur les photos de l'API) :
+// quand un lot d'annonces connues pas chères fait le min de l'API, c'est le vrai « mur » au-dessus de lui. Ignoré
+// s'il a plus de 12 h (des annonces inconnues passent sous l'ancien plancher au fil des heures, mesuré le 24/11).
+const UFLOOR_MAX_AGE_MIN = 12 * 60;
+function ufloorOf(b) {
+  return b && b.ufloor_t > 0 && (b.ufloor_age_min ?? 0) <= UFLOOR_MAX_AGE_MIN ? b.ufloor_t / 100 : null;
+}
+// Conteneurs et stickers (exemplaires identiques) : l'acheteur prend l'annonce la moins chère, souvent par lots
+// (mesuré du 19 au 24/11 : 93 % des ventes de conteneurs sont des achats groupés, 71 % au plancher). Vitesse de
+// revente au prix R = ventes tradables vues dans le flux à un prix ≥ R, par jour : ces acheteurs auraient pris
+// notre annonce, moins chère. Elle intègre déjà la concurrence des annonces moins chères arrivées entre-temps.
+// On n'en compte que la moitié (FUNGIBLE_SHARE) : la demande vient surtout de gros achats groupés irréguliers et
+// d'autres vendeurs se placent aussi sous le plancher ; au backtest du 20 au 24/11 (carnet rejoué toutes les 30 min),
+// les reventes ont été en moyenne environ deux fois plus lentes que ces ventes passées ne le laissaient prévoir.
+// null si le flux couvre moins de 24 h ou si R dépasse les prix de vente exportés.
+const FUNGIBLE_SHARE = 0.5;
+function fungibleRate(b, R, hoursCovered) {
+  if (!b || !b.sales_t_lv || !(hoursCovered >= 24)) return null;
+  const lv = b.sales_t_lv;
+  if (lv.length >= 60 && R > lv[lv.length - 1][0] / 100 + 1e-9) return null;
+  let below = 0;
+  for (const [p, n] of lv) { if (p / 100 < R - 1e-9) below += n; else break; }
+  return FUNGIBLE_SHARE * Math.max(0, (b.sales_t_7d || 0) - below) / (Math.min(hoursCovered, 168) / 24);
+}
+
 // Annonces tradables INCONNUES (pas vues dans le flux) moins chères que x, estimées d'après l'API : q_t annonces en
-// tout, la moins chère au min, la moitié sous la médiane des annonces (« tmed » de skins.json), réparties
-// régulièrement (en échelle log) entre les deux ; au-delà de la médiane, au moins la moitié. On retire celles qu'on
-// connaît. Ce sont des annonces qui passent avant les nôtres à la revente.
-function unknownBelow(x, b, it, L) {
+// tout, la moins chère au plancher des inconnues (sinon au min de l'API), la moitié sous la médiane des annonces
+// (« tmed » de skins.json), réparties régulièrement (en échelle log) entre les deux ; au-delà de la médiane, au moins
+// la moitié. On retire celles qu'on connaît. Ce sont des annonces qui passent avant les nôtres à la revente.
+function unknownBelow(x, b, it, L, uf) {
   if (!(b.q_t > 0)) return 0;
-  const mn = (b.min_t || 0) / 100, md = it.tmed > 0 ? it.tmed : 0;
+  const mn = uf > 0 ? uf : (b.min_t || 0) / 100, md = it.tmed > 0 ? it.tmed : 0;
   if (!(mn > 0) || x <= mn + 1e-9) return 0;
   const F = md > mn + 1e-9 && x < md ? 0.5 * Math.log(x / mn) / Math.log(md / mn) : 0.5;
   let known = 0;
-  for (const u of L) if (u.p < x - 1e-9) known++;
+  for (const u of L) if (u.p < x - 1e-9) known += u.n || 1;
   return Math.max(0, b.q_t * F - known);
 }
 // Plus petit prix de revente brut qui laisse la marge minimale sur une annonce achetée au prix p.
@@ -406,10 +457,12 @@ function minResale(p, ctx) {
 }
 
 // Meilleur lot d'annonces tradables d'un skin. it = entrée de skins.json, b = entrée de book.json,
-// ctx = { minEur, minPct, horizonH, budget, hc (heures de flux), clock, unknown: "estimate" | "ignore" }.
-// Prix du carnet en centimes. Pour chaque k (les k annonces les moins chères), revente visée 1 centime sous
-// l'annonce suivante (plafonnée au haut des ventes récentes) ; si le lot ne part pas dans le délai, on baisse le
-// prix (le délai croît avec le prix) tant que la marge minimale reste respectée.
+// ctx = { minEur (gain minimal du lot), minPct (marge minimale de chaque annonce, en %), horizonH, budget,
+// hc (heures de flux), clock, unknown: "estimate" | "ignore" }. Prix du carnet en centimes.
+// On achète les niveaux de prix les moins chers en entier (une partie d'un niveau laisserait des annonces au même
+// prix devant les nôtres), et on revend 1 centime sous le niveau suivant ou sous le plancher des annonces
+// inconnues (le « mur »), plafonné au haut des ventes récentes ; si le lot ne part pas dans le délai, on baisse le
+// prix (le délai croît avec le prix) tant que la marge de chaque annonce reste respectée.
 function bestLot(it, b, ctx) {
   if (!it || !b) return null;
   const pr = famOf(it);
@@ -418,30 +471,36 @@ function bestLot(it, b, ctx) {
   if (!(lam > 0) || !(m > 0)) return null;
   const cap = capOf(it, b, lam, m, pr);
   if (!cap || !(cap.c > 0)) return null;
-  const exported = b.tradable || [];
-  const L = exported.map(x => ({ p: x[0] / 100, age: x[1], wear: x[2], unknown: false }));
-  if (b.api_floor_t) L.push({ p: b.api_floor_t / 100, age: null, wear: null, unknown: true });
-  L.sort((x, y) => x.p - y.p);
+  const L = levelsOf(b);
   if (!L.length) return null;
-  const truncated = (b.known_t || 0) > exported.length;     // le carnet n'exporte que les 40 moins chères
+  const exported = L.reduce((a, l) => a + (l.unknown ? 0 : l.n), 0);
+  const truncated = (b.known_t || 0) > exported;            // niveaux au-delà des 40 exportés
   const knownAll = (b.known_t || 0) + (b.api_floor_t ? 1 : 0);
   const complete = b.q_t > 0 && knownAll >= b.q_t;            // toutes les annonces tradables sont connues
   const estimate = ctx.unknown !== "ignore" && !complete;
+  const uf = complete ? null : ufloorOf(b);
+  const fungible = pr === FS.STACK;
+  const unit = { minEur: 0.01, minPct: ctx.minPct || 0 };     // marge de chaque annonce ; ctx.minEur = gain du lot
   const H = ctx.horizonH + 1e-9;
-  let best = null, cost = 0;
-  for (let k = 1; k <= L.length; k++) {
-    cost += L[k - 1].p;
-    if (ctx.budget > 0 && cost > ctx.budget + 1e-9) break;
+  let best = null, cost = 0, k = 0;
+  for (let j = 0; j < L.length; j++) {
+    const lv = L[j];
+    if (ctx.budget > 0 && cost + lv.p * lv.n > ctx.budget + 1e-9) break;
+    cost += lv.p * lv.n;
+    k += lv.n;
     let wall, wallKind;
-    if (k < L.length) { wall = L[k].p; wallKind = L[k].unknown ? "api" : "connue"; }
+    if (j + 1 < L.length) { wall = L[j + 1].p; wallKind = L[j + 1].unknown ? "api" : "connue"; }
     else if (truncated) break;
     else { wall = Infinity; wallKind = complete ? "aucune" : "inconnue"; }
-    const pk = L[k - 1].p;
-    const Rmax = floorCents(Math.min(wall - 0.01, cap.c)), Rmin = minResale(pk, ctx);
+    if (uf !== null && uf > lv.p + 1e-9 && uf < wall - 1e-9) { wall = uf; wallKind = "inconnues"; }
+    const Rmax = floorCents(Math.min(wall - 0.01, cap.c)), Rmin = minResale(lv.p, unit);
     if (Rmin > Rmax + 1e-9) continue;
     const at = R => {
-      const rho = rhoOf(R, lam, m, pr), nu = nuOf(R, b, ctx.hc), U = estimate ? unknownBelow(R, b, it, L) : 0;
-      return { R, rho, nu, r: rho - nu, U, T: hoursFor(U + k, rho - nu, ctx.clock) };
+      const U = estimate ? unknownBelow(R, b, it, L, uf) : 0;
+      const fr = fungible ? fungibleRate(b, R, ctx.hc) : null;
+      if (fr !== null) return { R, rho: fr, nu: 0, r: fr, U, T: hoursFor(U + k, fr, ctx.clock), emp: true };
+      const rho = rhoOf(R, lam, m, pr), nu = nuOf(R, b, ctx.hc);
+      return { R, rho, nu, r: rho - nu, U, T: hoursFor(U + k, rho - nu, ctx.clock), emp: false };
     };
     let s = at(Rmax), lowered = false;
     if (!(s.T <= H)) {
@@ -452,16 +511,26 @@ function bestLot(it, b, ctx) {
     }
     const netR = net(s.R), gain = k * netR - cost;
     if (!best || gain > best.gain + 1e-9) {
-      best = { k, R: s.R, netR, cost, gain, rho: s.rho, nu: s.nu, r: s.r, U: s.U, Tk: s.T,
+      best = { k, j, R: s.R, netR, cost, gain, rho: s.rho, nu: s.nu, r: s.r, U: s.U, Tk: s.T, emp: s.emp,
         T1: hoursFor(s.U + 1, s.r, ctx.clock),
         pAll: probAtLeast(Math.round(s.U) + k, salesWithin(ctx.horizonH, s.r, ctx.clock)),
         wall, wallKind, lowered, capped: !lowered && cap.c <= wall - 0.01 + 1e-9, capSrc: cap.src, cap: cap.c, lam, m };
     }
   }
-  if (!best) return null;
-  best.units = L.slice(0, best.k).map((u, i) => Object.assign({}, u, { gain: best.netR - u.p,
-    T: hoursFor(best.U + i + 1, best.r, ctx.clock) }));
-  best.unknownIncluded = best.units.some(u => u.unknown);
+  if (!best || best.gain < (ctx.minEur || 0) - 1e-9) return null;
+  best.levels = L.slice(0, best.j + 1).map(l => Object.assign({}, l, { gain: best.netR - l.p }));
+  // Exemplaires un par un, dans l'ordre de revente (usure tirée des annonces exportées une à une, s'il y en a).
+  const trad = b.tradable || [];
+  best.units = [];
+  let known = 0;
+  for (const l of best.levels) {
+    for (let i = 0; i < l.n; i++) {
+      const x = l.unknown ? null : trad[known++];
+      best.units.push({ p: l.p, age: x ? x[1] : l.age, wear: x ? x[2] : null, unknown: l.unknown, gain: best.netR - l.p,
+        T: hoursFor(best.U + best.units.length + 1, best.r, ctx.clock) });
+    }
+  }
+  best.unknownIncluded = best.levels.some(u => u.unknown);
   best.knownAll = knownAll;
   best.coverage = b.q_t > 0 ? Math.min(1, knownAll / b.q_t) : null;
   best.unknownCount = Math.max(0, (b.q_t || 0) - knownAll);
@@ -535,7 +604,7 @@ function feedProblem(book, nowMs) {
 
 if (typeof module !== "undefined") {
   module.exports = { taxRate, net, floorCents, FS, TP, catOf, famOf, accept, lambdaOf, medianOf, capOf, rhoOf,
-    fracBelow, nuOf, buildClock, hoursFor, salesWithin, probAtLeast, unknownBelow, minResale, bestLot, sigmaOf, tpFactor, tpNowPrice,
+    fracBelow, nuOf, buildClock, hoursFor, salesWithin, probAtLeast, levelsOf, ufloorOf, fungibleRate, unknownBelow, minResale, bestLot, sigmaOf, tpFactor, tpNowPrice,
     tpOffers, feedProblem, itemType };
 }
 
@@ -571,6 +640,7 @@ if (typeof document !== "undefined") (function () {
     if (h < 48) return (h < 10 ? h.toFixed(1) : Math.round(h)) + " h";
     return Math.floor(h / 24) + " j " + Math.round(h % 24) + " h";
   }
+  const hz = h => h >= 72 ? Math.round(h / 24) + " j" : h + " h";
   function ageTxt(min) {
     if (min === null || min === undefined) return "—";
     const extra = BOOK ? (Date.now() - BOOK.generated) / 60000 : 0;
@@ -723,14 +793,15 @@ if (typeof document !== "undefined") (function () {
     tr.appendChild(nameCell(it, catOf(it) + " · ≈ " + lot.lam.toFixed(lot.lam < 10 ? 1 : 0) + " ventes/j"));
     const lo = lot.units[0].p, hi = lot.units[lot.k - 1].p;
     tr.appendChild(cell("num", lot.k + (lot.k > 1 ? " annonces" : " annonce"),
-      (lot.k > 1 ? eur(lo) + " → " + eur(hi) : eur(lo)) + (lot.unknownIncluded ? " · dont min API" : "")));
+      (hi > lo ? eur(lo) + " → " + eur(hi) : (lot.k > 1 ? "à " : "") + eur(lo)) + (lot.unknownIncluded ? " · dont min API" : "")));
     tr.appendChild(cell("num", eur(lot.cost)));
-    const wallTxt = lot.lowered ? "baissée pour partir sous " + S.horizon + " h" : lot.capped ? "plafond : haut des ventes"
+    const wallTxt = lot.lowered ? "baissée pour partir sous " + hz(S.horizon) : lot.capped ? "plafond : haut des ventes"
       : lot.wallKind === "connue" ? "1 ct sous " + eur(lot.wall) : lot.wallKind === "api" ? "1 ct sous le min API"
+      : lot.wallKind === "inconnues" ? "1 ct sous le reste du marché (" + eur(lot.wall) + ")"
       : "aucune annonce connue au-dessus";
     tr.appendChild(cell("num", eur(lot.R), "net " + eur(lot.netR) + " · " + wallTxt));
     tr.appendChild(cell("num", lot.k > 1 ? dur(lot.T1) + " – " + dur(lot.Tk) : dur(lot.Tk),
-      "lot entier < " + S.horizon + " h : " + Math.round(lot.pAll * 100) + " %"));
+      "lot entier < " + hz(S.horizon) + " : " + Math.round(lot.pAll * 100) + " %"));
     const g = cell("num", signed(lot.gain), pct(lot.roi));
     g.classList.add(lot.gain >= 0 ? "pos" : "neg");
     tr.appendChild(g);
@@ -749,20 +820,45 @@ if (typeof document !== "undefined") (function () {
     const info = el("div", "detail-info");
     const parts = [
       "Revente visée " + eur(lot.R) + " (" + (lot.lowered ? "baissée sous " + (isFinite(lot.wall) ? "l'annonce suivante (" + eur(lot.wall) + ")" : "le plafond")
-          + " pour que tout le lot parte sous " + S.horizon + " h"
+          + " pour que tout le lot parte sous " + hz(S.horizon)
         : lot.capped ? "plafond : " + lot.capSrc : lot.wallKind === "connue"
         ? "1 centime sous l'annonce suivante, " + eur(lot.wall) + " ; plafond " + eur(lot.cap)
         : lot.wallKind === "api" ? "1 centime sous l'annonce au min de l'API"
+        : lot.wallKind === "inconnues" ? "1 centime sous le reste du marché : annonces que le carnet ne connaît pas, à "
+          + eur(lot.wall) + " au moins d'après l'API ; plafond " + eur(lot.cap)
         : "plafond : " + lot.capSrc) + ")",
       lot.U >= 0.5 ? "≈ " + Math.round(lot.U) + " annonce(s) inconnue(s) moins chère(s) estimée(s) devant nous (d'après le min, la médiane et la quantité de l'API)" : "",
       "rythme ≈ " + lot.lam.toFixed(2) + " ventes/j (" + (b.sales_7d || 0) + " vues dans le flux), prix typique " + eur(lot.m),
-      "à " + eur(lot.R) + " l'annonce en tête part ≈ " + lot.rho.toFixed(2) + " fois/j ; nouvelles annonces moins chères attendues ≈ "
+      lot.emp ? "revente : ≈ " + lot.rho.toFixed(1) + " exemplaire(s)/j (moitié des ventes tradables vues à " + eur(lot.R) + " ou plus dans le flux, 7 j)"
+          + " ; ils s'achètent souvent par lots entiers, le délai réel varie beaucoup"
+        : "à " + eur(lot.R) + " l'annonce en tête part ≈ " + lot.rho.toFixed(2) + " fois/j ; nouvelles annonces moins chères attendues ≈ "
         + lot.nu.toFixed(2) + "/j",
       "coût " + eur(lot.cost) + " → revente nette " + eur(lot.netR * lot.k) + " = " + signed(lot.gain)
     ];
     info.textContent = parts.filter(Boolean).join(" · ");
     dtd.appendChild(info);
     const t = el("table"), th = el("tr");
+    if (lot.k > 12) {         // gros lot (caisses…) : une ligne par prix
+      for (const h of ["Prix", "Nombre", "Vue il y a", "Gain net / u", "Vente du dernier"]) th.appendChild(el("th", h === "Prix" ? "" : "num", h));
+      t.appendChild(th);
+      let rank = 0;
+      for (const l of lot.levels) {
+        rank += l.n;
+        const ur = el("tr");
+        const pc = cell("", eur(l.p));
+        if (l.unknown) pc.appendChild(el("span", "sub unk", "min API, pas vue"));
+        ur.appendChild(pc);
+        ur.appendChild(el("td", "num", String(l.n)));
+        ur.appendChild(el("td", "num", l.unknown ? "—" : "jusqu'à " + ageTxt(l.age)));
+        ur.appendChild(el("td", "num " + (l.gain >= 0 ? "pos" : "neg"), signed(l.gain)));
+        ur.appendChild(el("td", "num", "≈ " + dur(lot.units[rank - 1].T)));
+        t.appendChild(ur);
+      }
+      dtd.appendChild(t);
+      dtr.appendChild(dtd);
+      tbody.appendChild(dtr);
+      return;
+    }
     for (const h of ["Rang", "Prix", "Vue il y a", "Usure", "Gain net", "Vente estimée"]) th.appendChild(el("th", h === "Rang" ? "" : "num", h));
     t.appendChild(th);
     lot.units.forEach((u, i) => {
@@ -850,7 +946,7 @@ if (typeof document !== "undefined") (function () {
         ["Vente estimée", "num", "Du 1er au dernier exemplaire, et probabilité que tout le lot parte dans le délai"],
         ["Gain net", "num"], ["Couverture", "num", "Annonces tradables connues / annonces tradables selon l'API"]]);
       rowsCache = computeLots();
-      $("count").textContent = rowsCache.length + " lot(s) rentable(s) revendable(s) sous " + S.horizon + " h";
+      $("count").textContent = rowsCache.length + " lot(s) rentable(s) revendable(s) sous " + hz(S.horizon);
     } else {
       setHead([["", ""], ["Item", ""], ["Offre", "num"], ["Protection", "num", "Jours de protection restants"], ["Revente", "num"],
         ["Écart attendu", "num"], ["Marge", "num", "z × σ × √(jours restants + 2)"], ["Écart affiché", "num"], ["Offres", "num", "Offres sous le seuil de jours / offres trade-protect connues"]]);
