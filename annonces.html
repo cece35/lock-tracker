@@ -75,6 +75,8 @@
   .name a { color:var(--text); text-decoration:none; }
   .name a:hover { color:var(--accent); }
   .name-cell { display:flex; align-items:center; gap:8px; }
+  .name a.fiche { display:inline-block; color:var(--muted); border:1px solid var(--border); border-radius:3px; font-size:10.5px; line-height:1.5; padding:0 6px; margin-left:6px; white-space:nowrap; vertical-align:1px; }
+  .name a.fiche:hover { color:var(--accent); border-color:var(--accent-dim); }
   .item-thumb { width:36px; height:27px; object-fit:contain; background:var(--surface); border-radius:3px; flex-shrink:0; }
   .toggle { cursor:pointer; color:var(--muted); user-select:none; width:16px; text-align:center; }
   .toggle:hover { color:var(--accent); }
@@ -946,6 +948,10 @@ if (typeof document !== "undefined") (function () {
     const box = el("div"), a = el("a", "", it.n);
     a.href = buildLink(it); a.target = "_blank"; a.rel = "noopener";
     box.appendChild(a);
+    // Fiche du skin (prix, ventes vues dans le flux) : page du serveur, un dossier au-dessus de static/.
+    const f = el("a", "fiche", "fiche");
+    f.href = "../skin?name=" + encodeURIComponent(it.n); f.title = "Fiche du skin : prix et ventes vues dans le flux";
+    box.appendChild(f);
     if (extra) box.appendChild(el("span", "sub", extra));
     wrap.appendChild(box); td.appendChild(wrap);
     return td;
