@@ -927,9 +927,10 @@ Limites :
 
 # Page « annonces » (`annonces.html`, novembre 2026)
 
-Elle est accessible par le bouton « → annonces » de la page des prix. C'est une page statique du dépôt, copiée sur le VM à chaque exécution du workflow, à côté de `skingap.html`. Elle lit en relatif deux fichiers :
+Elle est accessible par le bouton « → annonces » de la page des prix. C'est une page statique du dépôt, copiée sur le VM à chaque exécution du workflow, à côté de `skingap.html`. Elle lit en relatif trois fichiers :
 - `skins.json` : le modèle de prix ;
 - `book.json` : le carnet d'annonces du VM, reconstruit depuis le flux live Skinport et recalé toutes les 5 min sur une photo de l'API. Un lien dans le dossier des fichiers statiques du serveur pointe vers `~/skinport-data/book/book.json`.
+- `patterns.json` : les offres de l'onglet « Patterns rares » (voir plus bas).
 
 Elle ne contient ni données ni secret.
 
@@ -958,6 +959,18 @@ Les jours restants de chaque offre sont exacts, lus dans le carnet.
 - **Écart affiché** = écart attendu − z·σ·√(jours restants + 2).
 - **σ** (volatilité journalière) est pour l'instant provisoire : tirée des prix typiques des ventes 24 h / 7 j / 30 j / 90 j, avec un plancher de 1,5 %/jour. Les photos horaires prendront le relais quand on aura une semaine de données.
 - **Filtre** : seuls les items revendables sous 48 h avec au moins 50 % de chances (`xp`) sont affichés.
+
+## Patterns rares (25/11/2026)
+
+Charms, Case Hardened, Heat Treated et Fade valent plus ou moins cher selon le # de l'exemplaire (template du charm, % de bleu, % de fade). Leurs ventes mélangent exemplaires ordinaires et recherchés, donc un exemplaire ordinaire paraît « sous le marché ».
+- Ils sont **exclus** des lots, des offres trade-protect (`isPatternItem`) et des alertes de prix du VM (`deals.py`).
+- Sur la page des prix, ils sont **masqués par défaut** (case « Masquer charms et skins à pattern ») ; affichés, ils portent un `#` et leur écart est grisé.
+
+L'onglet **Patterns rares** montre l'inverse : une annonce vue dans le flux dont le # se vend cher, mise en vente au prix d'un exemplaire ordinaire. Il lit `patterns.json`, écrit chaque minute sur le VM par `~/skinport-watch/patterns.py`, qui envoie aussi l'alerte ntfy (annonce de moins de 30 min). Un lien dans le dossier des fichiers statiques pointe vers `~/skinport-data/book/patterns.json`.
+- **Valeur** : la plus basse des ventes comparables vues dans le flux (30 jours), ramenée au prix suggéré actuel. Comparables : même arme et finition (une autre usure compte pour moitié) ou même charm ; % de bleu entre x − 12 et x, % de fade entre x − 3 et x (annonces à 90 % ou plus), template à 5 000 près.
+- Seules comptent les ventes « au prix du pattern » : au moins 2 × le prix suggéré (1,2 × pour Fade, 1,4 × le prix habituel du charm).
+- Il faut 2 ventes comparables (1 pour Heat Treated) et un gain net d'au moins 2 € et 30 %.
+- Rejoué minute par minute sur le flux du 20 au 25/11 : 8 notifications, toutes des Heat Treated très bleus au prix suggéré. Achetés par d'autres 36 à 40 min plus tard pour 4 d'entre elles, 1 min, 3 h et 24 h pour trois autres ; une annonce n'est pas encore partie.
 
 ## Carnet et maintenance
 

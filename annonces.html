@@ -9,6 +9,9 @@
   d'annonces du VM (book.json, reconstruit depuis le flux live Skinport) et du modèle de prix de
   skins.json (SkinGap.java). Fichier statique, sans données ni secret : il est servi dans le même dossier
   que skingap.html (sous le chemin secret du dashboard) et lit "skins.json" et "book.json" en relatif.
+  Onglet « Patterns rares » : patterns.json, écrit sur le VM par ~/skinport-watch/patterns.py (même règle que
+  l'alerte ntfy) ; les items à pattern (isPatternItem : même liste que deals.pattern_item) sont exclus des lots
+  et des offres trade-protect.
   Les constantes du modèle « Très rapide » (FS, TP) doivent rester identiques à FastSellModel
   (SkinGap.java), à la page des prix et à fast-price.js. Tests : node annonces-test.js
 -->
@@ -139,10 +142,11 @@
   <div class="seg tabs" id="tabs">
     <button data-t="lots" class="active">Lots tradables</button>
     <button data-t="tp">Offres trade-protect</button>
+    <button data-t="pat">Patterns rares</button>
   </div>
 
   <div class="controls">
-    <div class="grp" title="Gain net minimum du lot entier (ou de l'offre trade-protect), après la commission Skinport, et marge minimale de chaque annonce achetée, en % de son prix">
+    <div class="grp no-pat" title="Gain net minimum du lot entier (ou de l'offre trade-protect), après la commission Skinport, et marge minimale de chaque annonce achetée, en % de son prix">
       <span class="lbl">Gain min :</span>
       <input type="number" id="minEur" min="0" step="0.05" style="width:62px"><span class="lbl">€ par lot, marge</span>
       <input type="number" id="minPct" min="0" step="1" style="width:54px"><span class="lbl">% par annonce</span>
@@ -189,6 +193,24 @@
       <select id="tpSell">
         <option value="after">après la protection (défaut)</option>
         <option value="now">tout de suite, encore sous trade-protect</option>
+      </select>
+    </div>
+    <div class="grp only-pat hidden">
+      <span class="lbl">Famille :</span>
+      <select id="patFamSel">
+        <option value="">Toutes</option>
+        <option value="charm">Charms</option>
+        <option value="ht">Heat Treated</option>
+        <option value="ch">Case Hardened</option>
+        <option value="fade">Fade</option>
+      </select>
+    </div>
+    <div class="grp only-pat hidden" title="Ce que l'annonce est devenue d'après le flux (vendue, remise à un autre prix) et l'API (disparue). Le flux ne montre pas les annonces retirées par leur vendeur : « en vente ? » est à vérifier sur Skinport.">
+      <span class="lbl">Statut :</span>
+      <select id="patStSel">
+        <option value="all">Toutes (7 jours)</option>
+        <option value="listed">Encore en vente ?</option>
+        <option value="done">Vendues ou disparues</option>
       </select>
     </div>
     <div class="grp">
@@ -268,11 +290,27 @@
     Seuls les items qui ont assez de chances de partir sous 48 h une fois tradables sont affichés (« Proba 48 h », 50 %
     par défaut) : la marge suppose une revente rapide. En option, la revente tout de suite sous trade-protect (moins
     chère, ~7 à 12 % sous le Min tradable).<br><br>
+    <b>Patterns rares :</b> les charms et les skins Case Hardened, Heat Treated et Fade valent plus ou moins cher selon le
+    # de l'exemplaire (template du charm, % de bleu, % de fade) : leurs ventes mélangent exemplaires ordinaires et
+    recherchés, et un exemplaire ordinaire y paraît « sous le marché ». Ils sont donc exclus des lots, des offres
+    trade-protect et des alertes de prix. Cet onglet cherche l'inverse : une annonce vue dans le flux dont le # est de
+    ceux qui se vendent cher, mise en vente au prix d'un exemplaire ordinaire. <b>Valeur</b> = la plus basse des ventes
+    comparables vues dans le flux (30 jours) : même arme et finition (une vente d'une autre usure compte pour moitié)
+    ou même charm ; % de bleu entre x − 12 et x (Heat Treated, Case Hardened), % de fade entre x − 3 et x (Fade, à
+    partir de 90 %), template à 5 000 près (charms) ; seulement les ventes « au prix du pattern » : au moins 2 × le
+    prix suggéré par Skinport (1,2 × pour Fade, 1,4 × le prix habituel du charm), ramenées au prix suggéré actuel. Il
+    faut au moins 2 ventes comparables (1 pour les Heat Treated, dont la prime est très nette) et un gain net d'au
+    moins 2 € et 30 % ; l'annonce déclenche une alerte ntfy si elle a moins de 30 min. Exemple réel du 21/11 : 4 Desert
+    Eagle | Heat Treated (BS) à 54-63 % de bleu mis en vente à 0,80 € (le prix suggéré), achetés 37 à 41 min plus tard
+    et remis en vente à 5,14-17,35 € un quart d'heure après ; celui à 54 % s'est revendu 5,14 € 31 h plus tard. La
+    revente est lente : peu d'acheteurs cherchent un pattern précis. Le flux ne
+    montre pas les annonces retirées par leur vendeur : <b>en vente ?</b> est à vérifier sur Skinport ; <b>disparue</b>
+    = l'API ne la montre plus (retirée, ou vendue pendant une coupure du flux).<br><br>
     <b>Flux interrompu :</b> si le carnet n'est plus alimenté, un bandeau le signale : les annonces affichées ont pu être
     vendues entre-temps ; la page des prix (agrégats de l'API) reste à jour.
   </details>
 
-  <footer>Données : carnet d'annonces du VM (book.json) + modèle de prix (skins.json), rechargés toutes les 3 min.</footer>
+  <footer>Données : carnet d'annonces du VM (book.json), patterns rares (patterns.json) + modèle de prix (skins.json), rechargés toutes les 3 min.</footer>
 </div>
 
 <script>
@@ -602,10 +640,42 @@ function feedProblem(book, nowMs) {
   return null;
 }
 
+// Items dont la valeur dépend du # de l'exemplaire (template d'un charm, % de bleu, % de fade) : exclus des lots et
+// des offres trade-protect (leurs ventes mélangent exemplaires ordinaires et recherchés), montrés dans l'onglet
+// « Patterns rares ». Même liste que pattern_item() de deals.py et family() de patterns.py (VM).
+const PATTERN_FAMILIES = { "Heat Treated": "ht", "Case Hardened": "ch", "Fade": "fade" };
+function patternFamily(name) {
+  if (name.startsWith("Charm |") || name.startsWith("Souvenir Charm |")) return "charm";
+  const i = name.indexOf("|");
+  return i < 0 ? null : (PATTERN_FAMILIES[name.slice(i + 1).split("(")[0].trim()] || null);
+}
+function isPatternItem(name) { return patternFamily(name) !== null; }
+const PAT_FAMILY_LABEL = { charm: "Charm", ht: "Heat Treated", ch: "Case Hardened", fade: "Fade" };
+// « #72 352 » (template d'un charm), « 62.7 % bleu », « 98.3 % fade » (décimales avec un point, comme le reste de la page)
+function fmtPatX(fam, x, short) {
+  if (fam === "charm") return "#" + String(Math.round(x)).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return String(Math.round(x * 10) / 10) + " %" + (short ? "" : fam === "fade" ? " fade" : " bleu");
+}
+function durTxt(ms) {
+  const m = Math.max(0, Math.round(ms / 60000));
+  if (m < 90) return m + " min";
+  const h = m / 60;
+  return h < 48 ? (h < 10 ? h.toFixed(1) : Math.round(h)) + " h" : Math.floor(h / 24) + " j " + Math.round(h % 24) + " h";
+}
+// Ce qu'est devenue une offre de patterns.json : vendue (flux), remise à un autre prix (flux), disparue (API), ou rien vu.
+function patStatusOf(c, nowMs) {
+  const after = c.st_t ? durTxt(c.st_t - c.t) : "";
+  if (c.st === "sold") return { key: "done", txt: "vendue en " + after, sub: "à " + c.st_p.toFixed(2) + " €", cls: "neg" };
+  if (c.st === "relisted") return { key: "done", txt: "remise à " + c.st_p.toFixed(2) + " €", sub: "après " + after, cls: "" };
+  if (c.st === "gone") return { key: "done", txt: "disparue", sub: "plus dans l'API après " + after, cls: "neg" };
+  return { key: "listed", txt: "en vente ?", sub: "vue il y a " + durTxt(nowMs - c.t), cls: "pos",
+    title: "Pas vue vendue ni disparue. Le flux ne montre pas les annonces retirées par leur vendeur : à vérifier sur Skinport." };
+}
+
 if (typeof module !== "undefined") {
   module.exports = { taxRate, net, floorCents, FS, TP, catOf, famOf, accept, lambdaOf, medianOf, capOf, rhoOf,
     fracBelow, nuOf, buildClock, hoursFor, salesWithin, probAtLeast, levelsOf, ufloorOf, fungibleRate, unknownBelow, minResale, bestLot, sigmaOf, tpFactor, tpNowPrice,
-    tpOffers, feedProblem, itemType };
+    tpOffers, feedProblem, itemType, patternFamily, isPatternItem, fmtPatX, durTxt, patStatusOf };
 }
 
 // =====================================================================================
@@ -614,19 +684,25 @@ if (typeof module !== "undefined") {
 if (typeof document !== "undefined") (function () {
   const KEY = "skingap_annonces_v1";
   const DEFAULTS = { tab: "lots", minEur: 0.5, minPct: 5, priceMin: null, priceMax: null, horizon: 48, budget: null,
-    z: 1, maxDays: 8, tpProb: 50, tpSell: "after", unknown: "estimate", type: "all", cat: "", sortLots: "gain", sortTp: "gap", search: "" };
+    z: 1, maxDays: 8, tpProb: 50, tpSell: "after", unknown: "estimate", type: "all", cat: "", sortLots: "gain", sortTp: "gap", search: "",
+    patFam: "", patSt: "all", sortPat: "recent" };
   const SORTS = {
     lots: [["gain", "Gain total (haut → bas)"], ["roi", "ROI % (haut → bas)"], ["fast", "Vente la plus rapide"],
       ["cost", "Coût (bas → haut)"], ["size", "Nombre d'annonces (haut → bas)"], ["name", "Nom (A-Z)"]],
     tp: [["gap", "Écart affiché (haut → bas)"], ["roiday", "ROI par jour (haut → bas)"], ["days", "Jours restants (bas → haut)"],
+      ["price", "Prix (bas → haut)"], ["name", "Nom (A-Z)"]],
+    pat: [["recent", "Plus récentes"], ["gain", "Gain net (haut → bas)"], ["roi", "Gain % (haut → bas)"],
       ["price", "Prix (bas → haut)"], ["name", "Nom (A-Z)"]]
   };
+  const SORT_KEY = { lots: "sortLots", tp: "sortTp", pat: "sortPat" };
   const PAGE = 50;
   let S = Object.assign({}, DEFAULTS);
-  let SKINS = null, SKINS_T = 0, BOOK = null, BY_NAME = new Map(), CLOCK = null, CLOCK_T = 0;
+  let SKINS = null, SKINS_T = 0, BOOK = null, BY_NAME = new Map(), CLOCK = null, CLOCK_T = 0, PAT = null, PAT_ERR = null;
   let rowsCache = [], shown = PAGE, expanded = new Set(), loading = false;
 
   try { const raw = localStorage.getItem(KEY); if (raw) Object.assign(S, JSON.parse(raw)); } catch (e) {}
+  if (!SORTS[S.tab]) S.tab = DEFAULTS.tab;
+  if (location.hash === "#patterns") S.tab = "pat";     // lien direct vers l'onglet (page des prix)
   function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
 
   const $ = id => document.getElementById(id);
@@ -673,7 +749,8 @@ if (typeof document !== "undefined") (function () {
     loading = true;
     try {
       const needSkins = !SKINS || Date.now() - SKINS_T > 5 * 60e3;
-      const [sk, bk] = await Promise.all([needSkins ? fetchJson("skins.json") : null, fetchJson("book.json")]);
+      const patP = fetchJson("patterns.json").then(d => { PAT = d; PAT_ERR = null; }, e => { PAT_ERR = e.message; });
+      const [sk, bk] = await Promise.all([needSkins ? fetchJson("skins.json") : null, fetchJson("book.json"), patP]);
       if (sk) {
         SKINS = sk; SKINS_T = Date.now(); BY_NAME = new Map(sk.map(it => [it.n, it]));
         const cats = [...new Set(sk.map(catOf))].sort();
@@ -705,7 +782,7 @@ if (typeof document !== "undefined") (function () {
     const out = [];
     for (const key in BOOK.items) {
       const b = BOOK.items[key];
-      if (!(b.known_t > 0)) continue;
+      if (!(b.known_t > 0) || isPatternItem(key)) continue;
       const it = BY_NAME.get(key);
       if (!it || !passCommon(it)) continue;
       const lot = bestLot(it, b, ctx);
@@ -728,7 +805,7 @@ if (typeof document !== "undefined") (function () {
     const out = [];
     for (const key in BOOK.items) {
       const b = BOOK.items[key];
-      if (!(b.known_tp > 0)) continue;
+      if (!(b.known_tp > 0) || isPatternItem(key)) continue;
       const it = BY_NAME.get(key);
       if (!it || !passCommon(it)) continue;
       const t = tpOffers(it, b, ctx);
@@ -743,6 +820,26 @@ if (typeof document !== "undefined") (function () {
       name: (a, c) => a.it.n.localeCompare(c.it.n)
     };
     return out.sort(by[S.sortTp] || by.gap);
+  }
+
+  function computePat() {
+    if (!PAT) return [];
+    const now = Date.now(), out = [];
+    for (const c of PAT.cands || []) {
+      const it = BY_NAME.get(c.k) || { n: c.k, p: "https://skinport.com/market?item=" + encodeURIComponent(c.n) };
+      if (!passCommon(it)) continue;
+      if (S.patFam && c.fam !== S.patFam) continue;
+      const st = patStatusOf(c, now);
+      if (S.patSt !== "all" && st.key !== S.patSt) continue;
+      if (S.priceMin !== null && c.p < S.priceMin) continue;
+      if (S.priceMax !== null && c.p > S.priceMax) continue;
+      out.push({ key: c.a + "|" + c.pc, it, c, st });
+    }
+    const by = {
+      recent: (a, b) => b.c.t - a.c.t, gain: (a, b) => b.c.g - a.c.g, roi: (a, b) => b.c.pct - a.c.pct,
+      price: (a, b) => a.c.p - b.c.p, name: (a, b) => a.it.n.localeCompare(b.it.n) || b.c.t - a.c.t
+    };
+    return out.sort(by[S.sortPat] || by.recent);
   }
 
   function renderStatus() {
@@ -915,11 +1012,56 @@ if (typeof document !== "undefined") (function () {
     tbody.appendChild(dtr);
   }
 
+  function patRow(r, tbody) {
+    const { it, c, st } = r, tr = el("tr", "main"), now = Date.now();
+    tr.appendChild(toggleCell(r.key));
+    const extra = PAT_FAMILY_LABEL[c.fam] + (c.tp ? " · trade-protect " + Math.max(0, (c.lk - now) / 86400e3).toFixed(1) + " j" : " · tradable")
+      + (c.alerted ? " · 🔔 alerte" : "");
+    tr.appendChild(nameCell(it, extra));
+    tr.appendChild(cell("num", fmtPatX(c.fam, c.x), c.fam !== "charm" && c.seed !== null && c.seed !== undefined ? "seed " + c.seed : ""));
+    tr.appendChild(cell("num", eur(c.p), "normal ≈ " + eur(c.base)));
+    tr.appendChild(cell("num", "≥ " + eur(c.V), "net " + eur(net(c.V)), "Plus basse des ventes comparables, ramenée au prix suggéré actuel (autre usure : moitié)"));
+    const g = cell("num", signed(c.g), "+" + c.pct + " %"); g.classList.add("pos"); tr.appendChild(g);
+    tr.appendChild(cell("num", c.n_comps + (c.n_comps > 1 ? " ventes" : " vente"),
+      c.comps.slice(0, 2).map(h => eur(h[1])).join(" · ")));
+    tr.appendChild(cell("num", hhmm(c.t), new Date(c.t).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })));
+    const s = cell("", st.txt, st.sub, st.title);
+    if (st.cls) s.classList.add(st.cls);
+    tr.appendChild(s);
+    tbody.appendChild(tr);
+    if (!expanded.has(r.key)) return;
+    const dtr = el("tr", "detail"), dtd = el("td", "detail");
+    dtd.colSpan = 9;
+    dtd.appendChild(el("div", "detail-info", [
+      fmtPatX(c.fam, c.x) + (c.fam !== "charm" && c.seed !== null && c.seed !== undefined ? " (seed " + c.seed + ")" : "")
+        + " à " + eur(c.p) + ", prix suggéré " + eur(c.sp) + (c.fam === "charm" ? ", prix habituel du charm ≈ " + eur(c.base) : ""),
+      c.tp ? "trade-protect jusqu'au " + new Date(c.lk).toLocaleDateString("fr-FR") : "tradable",
+      c.nst ? c.nst + " sticker(s) appliqué(s)" : "", c.nch ? "charm appliqué" : "",
+      "revente estimée ≥ " + eur(c.V) + " (net " + eur(net(c.V)) + ") : la plus basse des " + c.n_comps + " vente(s) comparable(s), ramenée au prix suggéré actuel",
+      "revente sans doute lente : peu d'acheteurs cherchent un pattern précis",
+      c.alerted ? "alerte ntfy envoyée à " + hhmm(c.alerted) : "pas d'alerte (annonce vue trop tard ou avant l'installation)"
+    ].filter(Boolean).join(" · ")));
+    const tb = el("table"), th = el("tr");
+    for (const h of ["Ventes comparables", "Prix", "Usure", "Date"]) th.appendChild(el("th", h === "Ventes comparables" ? "" : "num", h));
+    tb.appendChild(th);
+    for (const h of c.comps) {
+      const ur = el("tr");
+      ur.appendChild(el("td", "", fmtPatX(c.fam, h[0])));
+      ur.appendChild(el("td", "num", eur(h[1])));
+      ur.appendChild(el("td", "num", (h[2] || "—") + (h[4] ? "" : " (compte pour moitié)")));
+      ur.appendChild(el("td", "num", new Date(h[3]).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })));
+      tb.appendChild(ur);
+    }
+    dtd.appendChild(tb);
+    dtr.appendChild(dtd);
+    tbody.appendChild(dtr);
+  }
+
   function renderRows() {
     const tbody = $("rows");
     tbody.innerHTML = "";
     const slice = rowsCache.slice(0, shown);
-    for (const r of slice) (S.tab === "lots" ? lotRow : tpRow)(r, tbody);
+    for (const r of slice) (S.tab === "lots" ? lotRow : S.tab === "tp" ? tpRow : patRow)(r, tbody);
     // Intitulé de colonne sur chaque cellule : affiché au-dessus de la valeur dans les fiches mobiles (CSS @media).
     for (const tr of tbody.querySelectorAll(":scope > tr.main"))
       [...tr.children].forEach((td, i) => { if (HEAD[i] && HEAD[i][0] && !td.classList.contains("name")) td.dataset.l = HEAD[i][0]; });
@@ -928,8 +1070,9 @@ if (typeof document !== "undefined") (function () {
 
   // Mobile : filtres repliés derrière le bouton « Filtres » (CSS @media), qui indique combien de
   // filtres de l'onglet courant diffèrent des réglages par défaut.
-  const FKEYS = { all: ["minEur", "minPct", "priceMin", "priceMax", "type", "cat"],
-    lots: ["horizon", "unknown", "budget"], tp: ["z", "tpProb", "maxDays", "tpSell"] };
+  const FKEYS = { all: ["priceMin", "priceMax", "type", "cat"],
+    lots: ["minEur", "minPct", "horizon", "unknown", "budget"], tp: ["minEur", "minPct", "z", "tpProb", "maxDays", "tpSell"],
+    pat: ["patFam", "patSt"] };
   function updateFiltersBtn() {
     const n = FKEYS.all.concat(FKEYS[S.tab] || []).filter(k => (S[k] ?? null) !== (DEFAULTS[k] ?? null)).length;
     $("filtersBtn").textContent = "⚙ Filtres" + (n ? " (" + n + ")" : "") + (document.body.classList.contains("filters-open") ? " ▴" : " ▾");
@@ -941,7 +1084,21 @@ if (typeof document !== "undefined") (function () {
     renderStatus();
     document.querySelectorAll(".only-lots").forEach(e => e.classList.toggle("hidden", S.tab !== "lots"));
     document.querySelectorAll(".only-tp").forEach(e => e.classList.toggle("hidden", S.tab !== "tp"));
-    if (S.tab === "lots") {
+    document.querySelectorAll(".only-pat").forEach(e => e.classList.toggle("hidden", S.tab !== "pat"));
+    document.querySelectorAll(".no-pat").forEach(e => e.classList.toggle("hidden", S.tab === "pat"));
+    if (S.tab === "pat") {
+      setHead([["", ""], ["Item", ""], ["Pattern", "num", "Template du charm, % de bleu (Heat Treated, Case Hardened) ou % de fade"],
+        ["Prix", "num", "Prix de l'annonce, et prix d'un exemplaire ordinaire"],
+        ["Revente estimée", "num", "Plus basse des ventes comparables, ramenée au prix suggéré actuel"],
+        ["Gain net", "num", "Revente estimée nette (commission déduite) − prix"], ["Preuves", "num", "Ventes comparables vues dans le flux (30 jours)"],
+        ["Vue", "num", "Mise en vente vue dans le flux"], ["Statut", ""]]);
+      rowsCache = computePat();
+      const nListed = rowsCache.filter(r => r.st.key === "listed").length;
+      $("count").textContent = !PAT ? "Pas encore de données sur les patterns" + (PAT_ERR ? " (" + PAT_ERR + ")" : "")
+        : rowsCache.length + " offre(s) sur " + PAT.rule.keep_days + " jours, dont " + nListed + " peut-être encore en vente · ventes comparables apprises depuis le "
+          + new Date(PAT.hist_since).toLocaleDateString("fr-FR") + " (" + Object.values(PAT.hist_sales || {}).reduce((a, b) => a + b, 0) + " ventes)"
+          + (Date.now() - PAT.generated > 10 * 60e3 ? " · ⚠ pas mis à jour depuis " + hhmm(PAT.generated) : "");
+    } else if (S.tab === "lots") {
       setHead([["", ""], ["Item", ""], ["Lot", "num"], ["Coût", "num"], ["Revente visée", "num", "Prix de revente brut de chaque exemplaire (net = après commission)"],
         ["Vente estimée", "num", "Du 1er au dernier exemplaire, et probabilité que tout le lot parte dans le délai"],
         ["Gain net", "num"], ["Couverture", "num", "Annonces tradables connues / annonces tradables selon l'API"]]);
@@ -963,10 +1120,11 @@ if (typeof document !== "undefined") (function () {
     $("priceMin").value = S.priceMin ?? ""; $("priceMax").value = S.priceMax ?? "";
     $("budget").value = S.budget ?? ""; $("z").value = S.z; $("maxDays").value = S.maxDays; $("tpProb").value = S.tpProb;
     $("tpSell").value = S.tpSell; $("unkSel").value = S.unknown; $("typeSel").value = S.type; $("catSel").value = S.cat; $("search").value = S.search;
+    $("patFamSel").value = S.patFam; $("patStSel").value = S.patSt;
     $("searchClear").classList.toggle("show", !!S.search);
     const sel = $("sortSel"); sel.innerHTML = "";
     for (const [v, label] of SORTS[S.tab]) { const o = el("option", "", label); o.value = v; sel.appendChild(o); }
-    sel.value = S.tab === "lots" ? S.sortLots : S.sortTp;
+    sel.value = S[SORT_KEY[S.tab]];
   }
   function changed() { shown = PAGE; save(); render(); }
   const numOrNull = v => (v === "" || v === null || isNaN(Number(v))) ? null : Number(v);
@@ -985,7 +1143,9 @@ if (typeof document !== "undefined") (function () {
   $("unkSel").onchange = e => { S.unknown = e.target.value; changed(); };
   $("typeSel").onchange = e => { S.type = e.target.value; changed(); };
   $("catSel").onchange = e => { S.cat = e.target.value; changed(); };
-  $("sortSel").onchange = e => { if (S.tab === "lots") S.sortLots = e.target.value; else S.sortTp = e.target.value; changed(); };
+  $("patFamSel").onchange = e => { S.patFam = e.target.value; changed(); };
+  $("patStSel").onchange = e => { S.patSt = e.target.value; changed(); };
+  $("sortSel").onchange = e => { S[SORT_KEY[S.tab]] = e.target.value; changed(); };
   $("search").oninput = e => { S.search = e.target.value; $("searchClear").classList.toggle("show", !!S.search); changed(); };
   $("searchClear").onclick = () => { S.search = ""; syncControls(); changed(); };
   $("resetFilters").onclick = () => { const tab = S.tab; S = Object.assign({}, DEFAULTS, { tab }); expanded.clear(); syncControls(); changed(); };

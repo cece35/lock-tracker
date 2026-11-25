@@ -247,4 +247,34 @@ test("bandeau : flux coupé, silencieux ou carnet en retard", () => {
   assert.strictEqual(A.feedProblem({ feed_down_since: null, feed_last_event: now, generated: now - 11 * 60e3 }, now).what, "Carnet pas mis à jour");
 });
 
+test("items à pattern : charms, Case Hardened, Heat Treated, Fade (pas Marble Fade, Doppler…)", () => {
+  const fam = n => A.patternFamily(n);
+  assert.strictEqual(fam("Charm | Baby Karat T"), "charm");
+  assert.strictEqual(fam("Souvenir Charm | Austin 2025 Highlight | Some Play"), "charm");
+  assert.strictEqual(fam("Desert Eagle | Heat Treated (Field-Tested)"), "ht");
+  assert.strictEqual(fam("AK-47 | Case Hardened (Minimal Wear) [Tier 2]"), "ch", "version Skinport dans la clé");
+  assert.strictEqual(fam("★ Hydra Gloves | Case Hardened (Field-Tested)"), "ch");
+  assert.strictEqual(fam("★ StatTrak™ Karambit | Fade (Factory New)"), "fade");
+  for (const n of ["★ Karambit | Marble Fade (Factory New)", "Glock-18 | Amber Fade (Factory New)", "★ Karambit | Doppler (Factory New) [Phase 2]",
+    "AK-47 | Redline (Field-Tested)", "Sticker Slab | Lucky 13 (Foil)", "Recoil Case", "★ Karambit"])
+    assert.strictEqual(fam(n), null, n);
+  assert.ok(A.isPatternItem("Charm | Semi-Precious") && !A.isPatternItem("AK-47 | Slate (Field-Tested)"));
+});
+
+test("patterns : affichage du # et de ce qu'est devenue l'annonce", () => {
+  assert.strictEqual(A.fmtPatX("charm", 72352), "#72 352");
+  assert.strictEqual(A.fmtPatX("charm", 512), "#512");
+  assert.strictEqual(A.fmtPatX("ht", 62.7), "62.7 % bleu");
+  assert.strictEqual(A.fmtPatX("fade", 98.25, true), "98.3 %");
+  assert.strictEqual(A.fmtPatX("ht", 57), "57 % bleu");
+  const t = Date.UTC(2026, 10, 21, 16, 1), c = (o) => Object.assign({ t, p: 0.8, st: "listed", st_t: null, st_p: null }, o);
+  assert.deepStrictEqual([A.patStatusOf(c({ st: "sold", st_t: t + 37 * 60e3, st_p: 0.8 }), t).txt, A.patStatusOf(c({ st: "sold", st_t: t + 37 * 60e3, st_p: 0.8 }), t).sub],
+    ["vendue en 37 min", "à 0.80 €"]);
+  assert.strictEqual(A.patStatusOf(c({ st: "relisted", st_t: t + 2 * 3600e3, st_p: 5.14 }), t).txt, "remise à 5.14 €");
+  assert.strictEqual(A.patStatusOf(c({ st: "gone", st_t: t + 30 * 3600e3 }), t).sub, "plus dans l'API après 30 h");
+  const l = A.patStatusOf(c({}), t + 3 * 86400e3);
+  assert.strictEqual(l.key, "listed");
+  assert.strictEqual(l.sub, "vue il y a 3 j 0 h");
+});
+
 console.log(n + " tests OK");

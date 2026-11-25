@@ -1160,8 +1160,11 @@ public class SkinGap {
     // Template HTML/JS — même thème visuel que la démo, mais pour la
     // liste complète, avec recherche, tri, override de médiane, et
     // sélecteur de période séparé pour le volume.
+    // En deux morceaux (HTML, puis le script) recollés au chargement de la classe : une constante de
+    // chaîne Java est limitée à 65 535 octets (« constant string too long ») et la page dépasse depuis le
+    // 25/11/2026. concat() et non « + » : deux constantes reliées par « + » seraient refusionnées en une.
     // ---------------------------------------------------------------
-    static final String HTML_TEMPLATE = """
+    static final String HTML_TEMPLATE_PAGE = """
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -1236,6 +1239,7 @@ public class SkinGap {
   .median-badge { color:var(--accent); font-size:11px; margin-left:3px; cursor:help; }
   .alert-badge { color:var(--accent); font-size:11.5px; margin-right:5px; cursor:help; }
   .drop-badge { color:var(--accent); font-size:11.5px; margin-right:5px; cursor:help; }
+  .pattern-badge { color:var(--accent); font-size:11.5px; margin-right:5px; cursor:help; text-decoration:none; }
   .detail-link { color:var(--muted); text-decoration:none; font-size:14px; margin-right:6px; }
   .detail-link:hover { color:var(--accent); }
   .med-input { width:70px; background:var(--surface); border:1px solid var(--accent-dim); color:var(--text); font-family:inherit; font-size:12.5px; padding:3px 5px; border-radius:3px; }
@@ -1383,6 +1387,12 @@ public class SkinGap {
         Masquer déjà alertés
       </label>
     </div>
+    <div class="grp" title="Charms, Case Hardened, Heat Treated et Fade : leur prix dépend du # de l'exemplaire (template du charm, % de bleu, % de fade). Leurs ventes mélangent exemplaires ordinaires et recherchés, donc l'écart affiché n'est pas fiable. Les bonnes affaires de ce type sont dans l'onglet « Patterns rares » de la page annonces.">
+      <label class="lbl" style="display:flex; align-items:center; gap:5px; cursor:pointer;">
+        <input type="checkbox" id="hidePattern" style="accent-color:var(--accent)" checked>
+        Masquer charms et skins à pattern
+      </label>
+    </div>
     <div class="grp">
       <span class="lbl">Nouveau prix bas (24h) :</span>
       <select id="newLowSel">
@@ -1483,7 +1493,12 @@ public class SkinGap {
     compris : achetable tout de suite, mais l'item n'arrive qu'à la fin de sa protection ; ces offres se
     vendent ~8 % moins cher que les tradables, d'où les deux niveaux de prix dans l'historique des ventes).
     La colonne <b>Min (TP)</b> est surlignée quand une offre
-    trade-protect est moins chère que le Min tradable.
+    trade-protect est moins chère que le Min tradable.<br>
+    <b>Items à pattern</b> (<span style="color:var(--accent)">#</span>) : charms, Case Hardened, Heat Treated et Fade
+    valent plus ou moins cher selon le # de l'exemplaire (template du charm, % de bleu, % de fade). Leurs ventes
+    mélangent exemplaires ordinaires et recherchés : l'écart n'est pas fiable, ils sont masqués par défaut (case
+    « Masquer charms et skins à pattern ») et leur écart est grisé quand ils sont affichés. Les exemplaires rares mis en
+    vente au prix normal sont dans l'onglet <b>Patterns rares</b> de la page annonces.
   </details>
 
   <footer>
@@ -1491,6 +1506,9 @@ public class SkinGap {
   </footer>
 </div>
 
+""";
+
+    static final String HTML_TEMPLATE_SCRIPT = """
 <script>
 const DATA = __DATA__;
 // Capturé pour comparaison au retour d'onglet (voir visibilitychange plus bas) — pas besoin
@@ -1521,6 +1539,7 @@ let probMin = 0; // en %, filtre sur "xp" (proba de vente sous 48 h), mode Très
 let typeFilter = "all";
 let gapMin = -Infinity, gapMax = Infinity;
 let hideAlerted = false;
+let hidePattern = true; // charms, Case Hardened, Heat Treated, Fade : prix qui dépend du # de l'exemplaire (isPatternItem)
 let newLowFilter = "all"; // "all" | "only" | "hide" — filtre sur le badge "nouveau prix bas (24h)"
 let alertedSkins = new Set(); // noms (minuscule) déjà présents dans les alertes du dashboard
 let priceDrops = new Map(); // nom (minuscule) -> dropped_at_ms, skins avec un nouveau prix bas actif (24h)
@@ -1542,7 +1561,7 @@ function serializeFilters() {
     probMin,
     gapMin: isFinite(gapMin) ? gapMin : null,
     gapMax: isFinite(gapMax) ? gapMax : null,
-    typeFilter, hideAlerted, newLowFilter,
+    typeFilter, hideAlerted, hidePattern, newLowFilter,
     selectedCats: selectedCats ? [...selectedCats] : null
   };
 }
@@ -1576,6 +1595,7 @@ function applySavedFilters(f) {
   gapMax = (f.gapMax === null || f.gapMax === undefined) ? Infinity : f.gapMax;
   if (f.typeFilter !== undefined) typeFilter = f.typeFilter;
   if (f.hideAlerted !== undefined) hideAlerted = f.hideAlerted;
+  if (f.hidePattern !== undefined) hidePattern = !!f.hidePattern;
   if (f.newLowFilter !== undefined) newLowFilter = f.newLowFilter;
 
   document.querySelectorAll("#volPeriod button").forEach(b => b.classList.toggle("active", b.dataset.p === volPeriod));
@@ -1595,6 +1615,7 @@ function applySavedFilters(f) {
   document.getElementById("gapMax").value = f.gapMax ?? "";
   document.getElementById("typeSel").value = typeFilter;
   document.getElementById("hideAlerted").checked = hideAlerted;
+  document.getElementById("hidePattern").checked = hidePattern;
   document.getElementById("newLowSel").value = newLowFilter;
   updateSearchClearVisibility();
 }
@@ -1603,7 +1624,7 @@ function applySavedFilters(f) {
 const FILTER_DEFAULTS = {
   volPeriod: "7", priceMode: "veryfast", buyMode: "ask", sellMode: "tradable", tpDays: 7, sortMode: "gap_desc", searchTerm: "",
   minVol: 0, priceMin: 0, priceMax: Infinity, roiMin: -Infinity, roiMax: Infinity,
-  typeFilter: "all", gapMin: -Infinity, gapMax: Infinity, newLowFilter: "all"
+  typeFilter: "all", gapMin: -Infinity, gapMax: Infinity, newLowFilter: "all", hidePattern: true
 };
 
 function itemType(name) {
@@ -1611,6 +1632,15 @@ function itemType(name) {
   if (l.includes("stattrak")) return "st";
   if (l.startsWith("souvenir")) return "souvenir";
   return "normal";
+}
+
+// Items dont la valeur dépend du # de l'exemplaire (template d'un charm, % de bleu, % de fade) : leurs ventes
+// mélangent exemplaires ordinaires et recherchés, l'écart n'est pas fiable. Masqués par défaut ; mêmes items que
+// la page annonces (isPatternItem), exclus aussi des alertes de prix du VM (deals.py).
+function isPatternItem(name) {
+  if (name.startsWith("Charm |") || name.startsWith("Souvenir Charm |")) return true;
+  const i = name.indexOf("|");
+  return i >= 0 && ["Heat Treated", "Case Hardened", "Fade"].includes(name.slice(i + 1).split("(")[0].trim());
 }
 
 // Catégorie Skinport (Rifle, Knife, Gloves, Sticker, Agent, Container, Music Kit, ...) :
@@ -1826,6 +1856,7 @@ function computeRows() {
     if (typeFilter !== "all" && itemType(it.n) !== typeFilter) return false;
     if (selectedCats && !selectedCats.has(catOf(it))) return false;
     if (hideAlerted && alertedSkins.has(it.n.toLowerCase())) return false;
+    if (hidePattern && isPatternItem(it.n)) return false;
     if (newLowFilter === "only" && !priceDrops.has(it.n.toLowerCase())) return false;
     if (newLowFilter === "hide" && priceDrops.has(it.n.toLowerCase())) return false;
     return true;
@@ -1904,6 +1935,15 @@ function render() {
       dropBadge.textContent = "🔻";
       dropBadge.title = "Nouveau prix bas (min TP en baisse par rapport au push précédent, dans les 24 dernières heures)";
       tdMed.appendChild(dropBadge);
+    }
+    const patternItem = isPatternItem(r.it.n);
+    if (patternItem) {
+      const patBadge = document.createElement("a");
+      patBadge.className = "pattern-badge";
+      patBadge.textContent = "#";
+      patBadge.href = "annonces.html#patterns";
+      patBadge.title = "Prix qui dépend du # de l'exemplaire (template, % de bleu, % de fade) : écart pas fiable. Bonnes affaires : onglet Patterns rares de la page annonces";
+      tdMed.appendChild(patBadge);
     }
     const span = document.createElement("span");
     span.className = "med-val" + (isOverride ? " overridden" : "");
@@ -2014,6 +2054,12 @@ function render() {
       for (const td of [tdGap, tdRoi]) {
         td.style.opacity = "0.45";
         td.title = "Vente sous 48 h peu probable (≈ " + Math.round(fast.prob * 100) + " %) : écart incertain";
+      }
+    }
+    if (patternItem) {
+      for (const td of [tdGap, tdRoi]) {
+        td.style.opacity = "0.45";
+        td.title = "Prix qui dépend du # de l'exemplaire : les ventes mélangent exemplaires ordinaires et recherchés, écart pas fiable";
       }
     }
 
@@ -2181,6 +2227,10 @@ document.getElementById("hideAlerted").addEventListener("change", (e) => {
   hideAlerted = e.target.checked;
   shown = PAGE; render(); saveFilters();
 });
+document.getElementById("hidePattern").addEventListener("change", (e) => {
+  hidePattern = e.target.checked;
+  shown = PAGE; render(); saveFilters();
+});
 document.getElementById("newLowSel").addEventListener("change", (e) => {
   newLowFilter = e.target.value;
   shown = PAGE; render(); saveFilters();
@@ -2205,6 +2255,7 @@ document.getElementById("resetFilters").addEventListener("click", () => {
   gapMin = FILTER_DEFAULTS.gapMin;
   gapMax = FILTER_DEFAULTS.gapMax;
   hideAlerted = false;
+  hidePattern = FILTER_DEFAULTS.hidePattern;
   newLowFilter = FILTER_DEFAULTS.newLowFilter;
 
   document.querySelectorAll("#volPeriod button").forEach(b => b.classList.toggle("active", b.dataset.p === volPeriod));
@@ -2224,6 +2275,7 @@ document.getElementById("resetFilters").addEventListener("click", () => {
   document.getElementById("gapMax").value = "";
   document.getElementById("typeSel").value = "all";
   document.getElementById("hideAlerted").checked = false;
+  document.getElementById("hidePattern").checked = FILTER_DEFAULTS.hidePattern;
   document.getElementById("newLowSel").value = "all";
   updateSearchClearVisibility();
 
@@ -2324,7 +2376,7 @@ function activeFilterCount() {
   return [volPeriod !== D.volPeriod, Number(minVol) > 0, priceMin > 0 || priceMax !== Infinity,
     gapMin !== -Infinity || gapMax !== Infinity, roiMin !== -Infinity || roiMax !== Infinity, probMin > 0,
     typeFilter !== D.typeFilter, priceMode !== D.priceMode, buyMode !== D.buyMode, sellMode !== D.sellMode,
-    hideAlerted, newLowFilter !== D.newLowFilter, !!selectedCats && selectedCats.size < catCount].filter(Boolean).length;
+    hideAlerted, hidePattern !== D.hidePattern, newLowFilter !== D.newLowFilter, !!selectedCats && selectedCats.size < catCount].filter(Boolean).length;
 }
 function updateFiltersBtn() {
   const n = activeFilterCount(), open = document.body.classList.contains("filters-open");
@@ -2411,4 +2463,6 @@ document.addEventListener("visibilitychange", () => {
 <script>setTimeout(()=>location.reload(),300000)</script></body>
 </html>
 """;
+
+    static final String HTML_TEMPLATE = HTML_TEMPLATE_PAGE.concat(HTML_TEMPLATE_SCRIPT);
 }
