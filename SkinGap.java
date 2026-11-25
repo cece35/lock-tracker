@@ -1240,8 +1240,8 @@ public class SkinGap {
   .alert-badge { color:var(--accent); font-size:11.5px; margin-right:5px; cursor:help; }
   .drop-badge { color:var(--accent); font-size:11.5px; margin-right:5px; cursor:help; }
   .pattern-badge { color:var(--accent); font-size:11.5px; margin-right:5px; cursor:help; text-decoration:none; }
-  .detail-link { color:var(--muted); text-decoration:none; font-size:14px; margin-right:6px; }
-  .detail-link:hover { color:var(--accent); }
+  .detail-link { color:var(--muted); text-decoration:none; font-size:10.5px; line-height:1.5; border:1px solid var(--border); border-radius:3px; padding:0 6px; margin-right:6px; white-space:nowrap; vertical-align:2px; }
+  .detail-link:hover { color:var(--accent); border-color:var(--accent-dim); }
   .med-input { width:70px; background:var(--surface); border:1px solid var(--accent-dim); color:var(--text); font-family:inherit; font-size:12.5px; padding:3px 5px; border-radius:3px; }
   .reset-med { color:var(--muted); font-size:10px; cursor:pointer; margin-left:4px; }
   .skin-link { color:var(--muted); text-decoration:none; font-size:14px; }
@@ -1294,7 +1294,8 @@ public class SkinGap {
     #rows td:nth-child(7)::before { content:"Écart"; }
     #rows td:nth-child(8)::before { content:"ROI"; }
     .item-thumb { width:44px; height:33px; }
-    .detail-link, .skin-link { display:inline-block; font-size:18px; padding:0 4px; }
+    .skin-link { display:inline-block; font-size:18px; padding:0 4px; }
+    .detail-link { display:inline-block; font-size:12px; padding:3px 8px; vertical-align:3px; }
   }
 </style>
 </head>
@@ -2066,7 +2067,7 @@ function render() {
     const tdLink = document.createElement("td");
     const detailLink = document.createElement("a");
     detailLink.href = DASHBOARD_URL + "skin?name=" + encodeURIComponent(r.it.n);
-    detailLink.className = "detail-link"; detailLink.textContent = "ⓘ"; detailLink.title = "Voir le détail de ce skin";
+    detailLink.className = "detail-link"; detailLink.textContent = "fiche"; detailLink.title = "Fiche du skin : prix et ventes vues dans le flux";
     tdLink.appendChild(detailLink);
     const a2 = document.createElement("a");
     a2.href = link; a2.target = "_blank"; a2.rel = "noopener";
