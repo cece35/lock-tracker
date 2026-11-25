@@ -12,6 +12,9 @@
   Onglet « Patterns rares » : patterns.json, écrit sur le VM par ~/skinport-watch/patterns.py (même règle que
   l'alerte ntfy) ; les items à pattern (isPatternItem : même liste que deals.pattern_item) sont exclus des lots
   et des offres trade-protect.
+  Colonne « Mise en vente » : heure de la dernière mise en vente (ou remise en vente) des annonces vues dans le flux
+  (book.json : tradable/tp [prix, âge, usure, mise_en_vente, 1re_apparition, prix_d_avant]), estimée d'après les
+  photos de l'API pour l'annonce inconnue au min (api_floor_t_when, voir floor_when dans book.py).
   Les constantes du modèle « Très rapide » (FS, TP) doivent rester identiques à FastSellModel
   (SkinGap.java), à la page des prix et à fast-price.js. Tests : node annonces-test.js
 -->
@@ -249,10 +252,11 @@
 
   <details class="notice">
     <summary>Comment lire cette page (lots, file d'attente, marge trade-protect…)</summary>
-    <b>Le carnet :</b> le téléphone enregistre en continu le flux live Skinport (chaque mise en vente, changement de prix
-    et vente) ; le VM en reconstruit les annonces une par une, recalées toutes les 5 min sur une photo de l'API (une
+    <b>Le carnet :</b> le téléphone enregistre en continu le flux live Skinport (chaque mise en vente ou remise en vente,
+    et chaque vente ; une baisse de prix sans remise en vente n'y apparaît pas, Skinport ne l'envoie pas) ; le VM en
+    reconstruit les annonces une par une, recalées toutes les 5 min sur une photo de l'API (une
     annonce sous le min ou au-dessus du max de l'API a disparu). Le flux ne montre une annonce que quand elle est créée
-    ou que son prix change : les annonces plus anciennes que l'enregistrement restent inconnues (colonne
+    ou remise en vente : les annonces plus anciennes que l'enregistrement restent inconnues (colonne
     <b>Couverture</b> = annonces connues / annonces tradables selon l'API). L'annonce la moins chère est toujours
     connue en prix grâce à l'API, même sans avoir été vue (<span class="unk">min API</span>).<br><br>
     <b>Lots tradables :</b> pour chaque skin, on essaie d'acheter les annonces les moins chères, prix par prix (toutes
@@ -271,6 +275,15 @@
     des annonces tradables : la moitié coûte moins que la médiane, réparties entre le plancher et la médiane) : elles
     passent avant les nôtres et allongent le délai. Sous le plancher relevé il y a moins de 12 h, il n'y en a pas.
     Réglage « ignorées » : lots plus optimistes, à vérifier sur Skinport.<br><br>
+    <b>Mise en vente :</b> heure à laquelle l'annonce est apparue ou a été modifiée (« 14:32 » aujourd'hui, sinon
+    « hier 23:10 » ou « 24/11 09:10 ») : une annonce intéressante part en général en moins de 24 h. Annonce vue dans
+    le flux : heure exacte, avec « prix changé » (et l'ancien prix) ou « remise en vente » si elle avait déjà été vue.
+    Annonce <span class="unk">min API</span> pas vue dans le flux : heure estimée sur les photos de l'API (toutes les
+    5 min, l'API ayant 10 à 20 min de retard). « ≈ 11:40 » : le min est descendu à ce prix sur la photo de 11:40
+    (nouvelle annonce, ou prix baissé, peu avant) ; « ≤ 11:40 » avec « après 09:10 » : une annonce moins chère la
+    cachait, elle est apparue entre les deux ; « peut-être bien avant » : elle était déjà là au début de l'historique
+    des photos. Pour un lot de plusieurs annonces : la plus récente, et la plus ancienne en dessous. Tri « Plus
+    récentes » : les annonces les plus fraîches d'abord.<br><br>
     <b>Vente estimée :</b> nos exemplaires sont mis en vente au même prix et partent l'un après l'autre (rang dans la
     file). <b>Caisses, capsules et stickers</b> (exemplaires identiques : l'acheteur prend le moins cher, souvent par
     lots) : vitesse = la moitié des ventes tradables vues dans le flux sur 7 jours à notre prix ou plus, par jour
@@ -437,16 +450,17 @@ function probAtLeast(k, M) {
 // inconnue au min de l'API (« api_floor_t ») est un niveau d'un exemplaire.
 function levelsOf(b) {
   let L;
-  if (b.levels_t) L = b.levels_t.map(x => ({ p: x[0] / 100, n: x[1], age: x[2], unknown: false }));
+  if (b.levels_t) L = b.levels_t.map(x => ({ p: x[0] / 100, n: x[1], age: x[2], t: x[3] || null, unknown: false }));
   else {
     const m = new Map();
     for (const x of b.tradable || []) {
       const p = x[0] / 100, e = m.get(p);
-      if (e) { e.n++; e.age = Math.max(e.age, x[1]); } else m.set(p, { p, n: 1, age: x[1], unknown: false });
+      if (e) { e.n++; e.age = Math.max(e.age, x[1]); e.t = Math.max(e.t || 0, x[3] || 0) || null; }
+      else m.set(p, { p, n: 1, age: x[1], t: x[3] || null, unknown: false });
     }
     L = [...m.values()];
   }
-  if (b.api_floor_t) L.push({ p: b.api_floor_t / 100, n: 1, age: null, unknown: true });
+  if (b.api_floor_t) L.push({ p: b.api_floor_t / 100, n: 1, age: null, t: null, when: b.api_floor_t_when || null, unknown: true });
   return L.sort((x, y) => x.p - y.p);
 }
 // Plancher des annonces tradables que le carnet ne connaît pas (« ufloor_t », relevé sur les photos de l'API) :
@@ -564,11 +578,13 @@ function bestLot(it, b, ctx) {
   for (const l of best.levels) {
     for (let i = 0; i < l.n; i++) {
       const x = l.unknown ? null : trad[known++];
-      best.units.push({ p: l.p, age: x ? x[1] : l.age, wear: x ? x[2] : null, unknown: l.unknown, gain: best.netR - l.p,
+      best.units.push({ p: l.p, age: x ? x[1] : l.age, wear: x ? x[2] : null, t: x ? x[3] || null : null, t1: x ? x[4] || null : null,
+        pp: x ? x[5] ?? null : null, when: l.unknown ? l.when : null, unknown: l.unknown, gain: best.netR - l.p,
         T: hoursFor(best.U + best.units.length + 1, best.r, ctx.clock) });
     }
   }
   best.unknownIncluded = best.levels.some(u => u.unknown);
+  best.tNewest = lotListedInfo(best, 0).t;
   best.knownAll = knownAll;
   best.coverage = b.q_t > 0 ? Math.min(1, knownAll / b.q_t) : null;
   best.unknownCount = Math.max(0, (b.q_t || 0) - knownAll);
@@ -621,7 +637,7 @@ function tpOffers(it, b, ctx) {
     const exposure = ctx.sell === "now" ? 2 : d + 2;            // jours pendant lesquels le prix peut bouger
     const marginPct = 1 - Math.exp(-ctx.z * sg.s * Math.sqrt(exposure));
     const gapExp = netR - p, margin = netR * marginPct, gap = gapExp - margin;
-    offers.push({ p, d, wear: x[2], resale, netR, gapExp, margin, marginPct, gap,
+    offers.push({ p, d, wear: x[2], t: x[3] || null, t1: x[4] || null, pp: x[5] ?? null, resale, netR, gapExp, margin, marginPct, gap,
       roi: gap / p, roiDay: gap / p / exposure, exposure });
   }
   if (!offers.length) return null;
@@ -660,7 +676,48 @@ function durTxt(ms) {
   const m = Math.max(0, Math.round(ms / 60000));
   if (m < 90) return m + " min";
   const h = m / 60;
-  return h < 48 ? (h < 10 ? h.toFixed(1) : Math.round(h)) + " h" : Math.floor(h / 24) + " j " + Math.round(h % 24) + " h";
+  return h < 48 ? (h < 10 ? h.toFixed(1) : Math.round(h)) + " h" : Math.floor(Math.round(h) / 24) + " j " + Math.round(h) % 24 + " h";
+}
+// Heure d'une annonce : « 14:32 » aujourd'hui, « hier 23:10 », sinon « 24/11 09:10 » (heure locale du navigateur).
+function fmtWhen(ms, nowMs) {
+  const d = new Date(ms), n = new Date(nowMs), pad = x => String(x).padStart(2, "0");
+  const hm = pad(d.getHours()) + ":" + pad(d.getMinutes());
+  const days = Math.round((new Date(n.getFullYear(), n.getMonth(), n.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400e3);
+  return days === 0 ? hm : days === 1 ? "hier " + hm : pad(d.getDate()) + "/" + pad(d.getMonth() + 1) + " " + hm;
+}
+// Mise en vente d'une annonce (exemplaire d'un lot ou offre trade-protect) : { main, sub, title, t }, t = heure retenue
+// pour trier (la plus ancienne possible si elle est estimée). Annonce vue dans le flux : heure exacte de sa dernière
+// mise en vente (t), « prix changé » ou « remise en vente » si elle avait déjà été vue avant (t1 = 1re apparition,
+// pp = prix d'avant en centimes). Annonce inconnue au min API : when = [S, R, plus_ancienne] (floor_when, book.py).
+function listedInfo(u, nowMs) {
+  if (u.unknown) {
+    const w = u.when, base = "Annonce pas vue dans le flux : heure estimée sur les photos de l'API (toutes les 5 min, 10 à 20 min de retard). ";
+    if (!w) return { main: "—", sub: "", title: "Annonce pas vue dans le flux : heure inconnue", t: null };
+    const [S, R, older] = w;
+    if (R === S && !older)
+      return { main: "≈ " + fmtWhen(S, nowMs), sub: "photo API", t: R,
+        title: base + "Le min est descendu à ce prix sur la photo de " + fmtWhen(S, nowMs) + " : nouvelle annonce, ou prix baissé, peu avant." };
+    return { main: "≤ " + fmtWhen(S, nowMs), sub: older ? "peut-être bien avant" : "après " + fmtWhen(R, nowMs), t: R,
+      title: base + (older ? "Le min était déjà à ce prix ou moins au début de l'historique des photos (" + fmtWhen(R, nowMs) + ")."
+        : "Une annonce moins chère la cachait : elle est apparue entre " + fmtWhen(R, nowMs) + " et " + fmtWhen(S, nowMs) + ".") };
+  }
+  if (!u.t) return { main: "—", sub: "", title: "", t: null };
+  const rel = "il y a " + durTxt(nowMs - u.t);
+  if (u.t1 && u.t1 < u.t - 60e3) {
+    const changed = u.pp !== null && u.pp !== undefined && u.pp !== Math.round(u.p * 100);
+    return { main: fmtWhen(u.t, nowMs), sub: changed ? "prix changé, était " + (u.pp / 100).toFixed(2) + " €" : "remise en vente", t: u.t,
+      title: rel + " · 1re mise en vente vue " + fmtWhen(u.t1, nowMs) };
+  }
+  return { main: fmtWhen(u.t, nowMs), sub: rel, title: "Mise en vente vue dans le flux", t: u.t };
+}
+// Colonne « Mise en vente » d'un lot : l'annonce s'il n'y en a qu'une, sinon la plus récente (et la plus ancienne).
+function lotListedInfo(lot, nowMs) {
+  if (lot.units.length === 1) return listedInfo(lot.units[0], nowMs);
+  const ts = lot.units.map(u => listedInfo(u, nowMs).t).filter(t => t);
+  if (!ts.length) return { main: "—", sub: "", title: "", t: null };
+  const hi = Math.max(...ts), lo = Math.min(...ts);
+  return { main: fmtWhen(hi, nowMs), sub: hi - lo >= 60e3 ? "la plus ancienne " + fmtWhen(lo, nowMs) : "toutes à la même heure", t: hi,
+    title: "Mise en vente (ou modification) la plus récente du lot ; ≈ / ≤ : estimée d'après l'API" };
 }
 // Ce qu'est devenue une offre de patterns.json : vendue (flux), remise à un autre prix (flux), disparue (API), ou rien vu.
 function patStatusOf(c, nowMs) {
@@ -675,7 +732,7 @@ function patStatusOf(c, nowMs) {
 if (typeof module !== "undefined") {
   module.exports = { taxRate, net, floorCents, FS, TP, catOf, famOf, accept, lambdaOf, medianOf, capOf, rhoOf,
     fracBelow, nuOf, buildClock, hoursFor, salesWithin, probAtLeast, levelsOf, ufloorOf, fungibleRate, unknownBelow, minResale, bestLot, sigmaOf, tpFactor, tpNowPrice,
-    tpOffers, feedProblem, itemType, patternFamily, isPatternItem, fmtPatX, durTxt, patStatusOf };
+    tpOffers, feedProblem, itemType, patternFamily, isPatternItem, fmtPatX, durTxt, patStatusOf, fmtWhen, listedInfo, lotListedInfo };
 }
 
 // =====================================================================================
@@ -688,9 +745,9 @@ if (typeof document !== "undefined") (function () {
     patFam: "", patSt: "all", sortPat: "recent" };
   const SORTS = {
     lots: [["gain", "Gain total (haut → bas)"], ["roi", "ROI % (haut → bas)"], ["fast", "Vente la plus rapide"],
-      ["cost", "Coût (bas → haut)"], ["size", "Nombre d'annonces (haut → bas)"], ["name", "Nom (A-Z)"]],
+      ["cost", "Coût (bas → haut)"], ["size", "Nombre d'annonces (haut → bas)"], ["recent", "Plus récentes"], ["name", "Nom (A-Z)"]],
     tp: [["gap", "Écart affiché (haut → bas)"], ["roiday", "ROI par jour (haut → bas)"], ["days", "Jours restants (bas → haut)"],
-      ["price", "Prix (bas → haut)"], ["name", "Nom (A-Z)"]],
+      ["price", "Prix (bas → haut)"], ["recent", "Plus récentes"], ["name", "Nom (A-Z)"]],
     pat: [["recent", "Plus récentes"], ["gain", "Gain net (haut → bas)"], ["roi", "Gain % (haut → bas)"],
       ["price", "Prix (bas → haut)"], ["name", "Nom (A-Z)"]]
   };
@@ -714,7 +771,7 @@ if (typeof document !== "undefined") (function () {
     if (!isFinite(h)) return "—";
     if (h < 1) return Math.max(1, Math.round(h * 60)) + " min";
     if (h < 48) return (h < 10 ? h.toFixed(1) : Math.round(h)) + " h";
-    return Math.floor(h / 24) + " j " + Math.round(h % 24) + " h";
+    return Math.floor(Math.round(h) / 24) + " j " + Math.round(h) % 24 + " h";   // arrondi d'abord : pas de « 6 j 24 h »
   }
   const hz = h => h >= 72 ? Math.round(h / 24) + " j" : h + " h";
   function ageTxt(min) {
@@ -794,6 +851,7 @@ if (typeof document !== "undefined") (function () {
     const by = {
       gain: (a, c) => c.lot.gain - a.lot.gain, roi: (a, c) => c.lot.roi - a.lot.roi, fast: (a, c) => a.lot.Tk - c.lot.Tk,
       cost: (a, c) => a.lot.cost - c.lot.cost, size: (a, c) => c.lot.k - a.lot.k || c.lot.gain - a.lot.gain,
+      recent: (a, c) => (c.lot.tNewest || 0) - (a.lot.tNewest || 0) || c.lot.gain - a.lot.gain,
       name: (a, c) => a.it.n.localeCompare(c.it.n)
     };
     return out.sort(by[S.sortLots] || by.gain);
@@ -817,6 +875,7 @@ if (typeof document !== "undefined") (function () {
     const by = {
       gap: (a, c) => c.t.best.gap - a.t.best.gap, roiday: (a, c) => c.t.best.roiDay - a.t.best.roiDay,
       days: (a, c) => a.t.best.d - c.t.best.d, price: (a, c) => a.t.best.p - c.t.best.p,
+      recent: (a, c) => (c.t.best.t || 0) - (a.t.best.t || 0) || c.t.best.gap - a.t.best.gap,
       name: (a, c) => a.it.n.localeCompare(c.it.n)
     };
     return out.sort(by[S.sortTp] || by.gap);
@@ -891,6 +950,8 @@ if (typeof document !== "undefined") (function () {
     const lo = lot.units[0].p, hi = lot.units[lot.k - 1].p;
     tr.appendChild(cell("num", lot.k + (lot.k > 1 ? " annonces" : " annonce"),
       (hi > lo ? eur(lo) + " → " + eur(hi) : (lot.k > 1 ? "à " : "") + eur(lo)) + (lot.unknownIncluded ? " · dont min API" : "")));
+    const li = lotListedInfo(lot, Date.now());
+    tr.appendChild(cell("num", li.main, li.sub, li.title));
     tr.appendChild(cell("num", eur(lot.cost)));
     const wallTxt = lot.lowered ? "baissée pour partir sous " + hz(S.horizon) : lot.capped ? "plafond : haut des ventes"
       : lot.wallKind === "connue" ? "1 ct sous " + eur(lot.wall) : lot.wallKind === "api" ? "1 ct sous le min API"
@@ -913,7 +974,7 @@ if (typeof document !== "undefined") (function () {
     tbody.appendChild(tr);
     if (!expanded.has(r.key)) return;
     const dtr = el("tr", "detail"), dtd = el("td", "detail");
-    dtd.colSpan = 8;
+    dtd.colSpan = 9;
     const info = el("div", "detail-info");
     const parts = [
       "Revente visée " + eur(lot.R) + " (" + (lot.lowered ? "baissée sous " + (isFinite(lot.wall) ? "l'annonce suivante (" + eur(lot.wall) + ")" : "le plafond")
@@ -936,7 +997,7 @@ if (typeof document !== "undefined") (function () {
     dtd.appendChild(info);
     const t = el("table"), th = el("tr");
     if (lot.k > 12) {         // gros lot (caisses…) : une ligne par prix
-      for (const h of ["Prix", "Nombre", "Vue il y a", "Gain net / u", "Vente du dernier"]) th.appendChild(el("th", h === "Prix" ? "" : "num", h));
+      for (const h of ["Prix", "Nombre", "Dernière mise en vente", "Gain net / u", "Vente du dernier"]) th.appendChild(el("th", h === "Prix" ? "" : "num", h));
       t.appendChild(th);
       let rank = 0;
       for (const l of lot.levels) {
@@ -946,7 +1007,8 @@ if (typeof document !== "undefined") (function () {
         if (l.unknown) pc.appendChild(el("span", "sub unk", "min API, pas vue"));
         ur.appendChild(pc);
         ur.appendChild(el("td", "num", String(l.n)));
-        ur.appendChild(el("td", "num", l.unknown ? "—" : "jusqu'à " + ageTxt(l.age)));
+        const li = l.unknown ? listedInfo(l, Date.now()) : { main: l.t ? fmtWhen(l.t, Date.now()) : "—", sub: "la plus ancienne il y a " + ageTxt(l.age) };
+        ur.appendChild(cell("num", li.main, li.sub, li.title));
         ur.appendChild(el("td", "num " + (l.gain >= 0 ? "pos" : "neg"), signed(l.gain)));
         ur.appendChild(el("td", "num", "≈ " + dur(lot.units[rank - 1].T)));
         t.appendChild(ur);
@@ -956,7 +1018,7 @@ if (typeof document !== "undefined") (function () {
       tbody.appendChild(dtr);
       return;
     }
-    for (const h of ["Rang", "Prix", "Vue il y a", "Usure", "Gain net", "Vente estimée"]) th.appendChild(el("th", h === "Rang" ? "" : "num", h));
+    for (const h of ["Rang", "Prix", "Mise en vente", "Usure", "Gain net", "Vente estimée"]) th.appendChild(el("th", h === "Rang" ? "" : "num", h));
     t.appendChild(th);
     lot.units.forEach((u, i) => {
       const ur = el("tr");
@@ -964,7 +1026,8 @@ if (typeof document !== "undefined") (function () {
       const pc = cell("num", eur(u.p));
       if (u.unknown) { pc.appendChild(el("span", "sub unk", "min API, pas vue")); }
       ur.appendChild(pc);
-      ur.appendChild(el("td", "num", u.unknown ? "—" : ageTxt(u.age)));
+      const li = listedInfo(u, Date.now());
+      ur.appendChild(cell("num", li.main, li.sub, li.title));
       ur.appendChild(el("td", "num", u.wear === null || u.wear === undefined ? "—" : u.wear.toFixed(4)));
       ur.appendChild(el("td", "num " + (u.gain >= 0 ? "pos" : "neg"), signed(u.gain)));
       ur.appendChild(el("td", "num", "≈ " + dur(u.T)));
@@ -980,6 +1043,8 @@ if (typeof document !== "undefined") (function () {
     tr.appendChild(toggleCell(r.key));
     tr.appendChild(nameCell(it, catOf(it) + " · σ ≈ " + (t.sigma.s * 100).toFixed(1) + " %/j"));
     tr.appendChild(cell("num", eur(o.p), o.wear === null || o.wear === undefined ? "" : "usure " + o.wear.toFixed(4)));
+    const li = listedInfo(o, Date.now());
+    tr.appendChild(cell("num", li.main, li.sub, li.title));
     tr.appendChild(cell("num", o.d.toFixed(1) + " j"));
     tr.appendChild(cell("num", eur(o.resale), "net " + eur(o.netR) + (S.tpSell === "now" ? " · tout de suite" : " · proba 48 h " + Math.round(t.prob * 100) + " %")));
     const ge = cell("num", signed(o.gapExp)); ge.classList.add(o.gapExp >= 0 ? "pos" : "neg"); tr.appendChild(ge);
@@ -989,15 +1054,17 @@ if (typeof document !== "undefined") (function () {
     tbody.appendChild(tr);
     if (!expanded.has(r.key)) return;
     const dtr = el("tr", "detail"), dtd = el("td", "detail");
-    dtd.colSpan = 9;
+    dtd.colSpan = 10;
     dtd.appendChild(el("div", "detail-info", "Volatilité " + (t.sigma.s * 100).toFixed(1) + " %/jour, " + t.sigma.src
       + " · marge = " + S.z + " × σ × √(jours d'exposition) · min tradable actuel " + eur(it.ask)));
     const tb = el("table"), th = el("tr");
-    for (const h of ["Prix", "Jours restants", "Usure", "Revente", "Écart attendu", "Marge", "Écart affiché", "ROI/j"]) th.appendChild(el("th", h === "Prix" ? "" : "num", h));
+    for (const h of ["Prix", "Mise en vente", "Jours restants", "Usure", "Revente", "Écart attendu", "Marge", "Écart affiché", "ROI/j"]) th.appendChild(el("th", h === "Prix" ? "" : "num", h));
     tb.appendChild(th);
     for (const x of t.offers) {
       const ur = el("tr");
       ur.appendChild(el("td", "", eur(x.p)));
+      const li = listedInfo(x, Date.now());
+      ur.appendChild(cell("num", li.main, li.sub, li.title));
       ur.appendChild(el("td", "num", x.d.toFixed(1) + " j"));
       ur.appendChild(el("td", "num", x.wear === null || x.wear === undefined ? "—" : x.wear.toFixed(4)));
       ur.appendChild(el("td", "num", eur(x.resale)));
@@ -1099,13 +1166,16 @@ if (typeof document !== "undefined") (function () {
           + new Date(PAT.hist_since).toLocaleDateString("fr-FR") + " (" + Object.values(PAT.hist_sales || {}).reduce((a, b) => a + b, 0) + " ventes)"
           + (Date.now() - PAT.generated > 10 * 60e3 ? " · ⚠ pas mis à jour depuis " + hhmm(PAT.generated) : "");
     } else if (S.tab === "lots") {
-      setHead([["", ""], ["Item", ""], ["Lot", "num"], ["Coût", "num"], ["Revente visée", "num", "Prix de revente brut de chaque exemplaire (net = après commission)"],
+      setHead([["", ""], ["Item", ""], ["Lot", "num"],
+        ["Mise en vente", "num", "Heure de mise en vente ou de modification de l'annonce (la plus récente du lot) ; ≈ / ≤ : estimée d'après l'API"],
+        ["Coût", "num"], ["Revente visée", "num", "Prix de revente brut de chaque exemplaire (net = après commission)"],
         ["Vente estimée", "num", "Du 1er au dernier exemplaire, et probabilité que tout le lot parte dans le délai"],
         ["Gain net", "num"], ["Couverture", "num", "Annonces tradables connues / annonces tradables selon l'API"]]);
       rowsCache = computeLots();
       $("count").textContent = rowsCache.length + " lot(s) rentable(s) revendable(s) sous " + hz(S.horizon);
     } else {
-      setHead([["", ""], ["Item", ""], ["Offre", "num"], ["Protection", "num", "Jours de protection restants"], ["Revente", "num"],
+      setHead([["", ""], ["Item", ""], ["Offre", "num"], ["Mise en vente", "num", "Heure de mise en vente ou de modification de l'offre"],
+        ["Protection", "num", "Jours de protection restants"], ["Revente", "num"],
         ["Écart attendu", "num"], ["Marge", "num", "z × σ × √(jours restants + 2)"], ["Écart affiché", "num"], ["Offres", "num", "Offres sous le seuil de jours / offres trade-protect connues"]]);
       rowsCache = computeTp();
       $("count").textContent = rowsCache.length + " skin(s) avec une offre trade-protect rentable après la marge de sécurité";
