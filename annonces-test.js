@@ -277,6 +277,16 @@ test("patterns : affichage du # et de ce qu'est devenue l'annonce", () => {
   assert.strictEqual(l.sub, "vue il y a 3 j 0 h");
 });
 
+test("patterns : filtre trade lock selon l'état actuel de l'annonce", () => {
+  const now = Date.UTC(2026, 10, 25, 18, 0);
+  const free = { tp: false, lk: null }, locked = { tp: true, lk: now + 3 * 86400e3 }, ended = { tp: true, lk: now - 60e3 };
+  assert.deepStrictEqual([A.patLocked(free, now), A.patLocked(locked, now), A.patLocked(ended, now)], [false, true, false]);
+  const keep = mode => [free, locked, ended].map(c => A.patLockOk(c, mode, now));
+  assert.deepStrictEqual(keep("all"), [true, true, true], "Tous");
+  assert.deepStrictEqual(keep("none"), [true, false, true], "Sans trade lock : protection finie comprise");
+  assert.deepStrictEqual(keep("lock"), [false, true, false], "Avec trade lock");
+});
+
 test("heure de mise en vente : aujourd'hui, hier, date (heure locale)", () => {
   const at = (d, h, m) => new Date(2026, 10, d, h, m).getTime();
   assert.strictEqual(A.fmtWhen(at(25, 14, 32), at(25, 15, 0)), "14:32");

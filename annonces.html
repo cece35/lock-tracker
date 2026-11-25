@@ -216,6 +216,14 @@
         <option value="done">Vendues ou disparues</option>
       </select>
     </div>
+    <div class="grp only-pat hidden" title="Trade lock de l'annonce maintenant : une offre trade-protect dont la protection est finie compte comme sans trade lock (achetée, elle se revend tout de suite).">
+      <span class="lbl">Trade lock :</span>
+      <select id="patLockSel">
+        <option value="all">Tous</option>
+        <option value="none">Sans trade lock</option>
+        <option value="lock">Avec trade lock</option>
+      </select>
+    </div>
     <div class="grp">
       <span class="lbl">Type :</span>
       <select id="typeSel">
@@ -318,7 +326,8 @@
     et remis en vente à 5,14-17,35 € un quart d'heure après ; celui à 54 % s'est revendu 5,14 € 31 h plus tard. La
     revente est lente : peu d'acheteurs cherchent un pattern précis. Le flux ne
     montre pas les annonces retirées par leur vendeur : <b>en vente ?</b> est à vérifier sur Skinport ; <b>disparue</b>
-    = l'API ne la montre plus (retirée, ou vendue pendant une coupure du flux).<br><br>
+    = l'API ne la montre plus (retirée, ou vendue pendant une coupure du flux). Filtre <b>Trade lock</b> : selon l'état de
+    l'annonce maintenant (une offre trade-protect dont la protection est finie compte comme sans trade lock).<br><br>
     <b>Flux interrompu :</b> si le carnet n'est plus alimenté, un bandeau le signale : les annonces affichées ont pu être
     vendues entre-temps ; la page des prix (agrégats de l'API) reste à jour.
   </details>
@@ -720,6 +729,10 @@ function lotListedInfo(lot, nowMs) {
     title: "Mise en vente (ou modification) la plus récente du lot ; ≈ / ≤ : estimée d'après l'API" };
 }
 // Ce qu'est devenue une offre de patterns.json : vendue (flux), remise à un autre prix (flux), disparue (API), ou rien vu.
+// Offre de patterns.json encore sous trade lock maintenant (lk = fin de la protection, ms) ; une offre mise en vente
+// en trade-protect dont la protection est finie est tradable. Filtre « Trade lock » : all, none (sans), lock (avec).
+function patLocked(c, nowMs) { return !!(c.lk && c.lk > nowMs); }
+function patLockOk(c, mode, nowMs) { return mode === "none" ? !patLocked(c, nowMs) : mode === "lock" ? patLocked(c, nowMs) : true; }
 function patStatusOf(c, nowMs) {
   const after = c.st_t ? durTxt(c.st_t - c.t) : "";
   if (c.st === "sold") return { key: "done", txt: "vendue en " + after, sub: "à " + c.st_p.toFixed(2) + " €", cls: "neg" };
@@ -732,7 +745,7 @@ function patStatusOf(c, nowMs) {
 if (typeof module !== "undefined") {
   module.exports = { taxRate, net, floorCents, FS, TP, catOf, famOf, accept, lambdaOf, medianOf, capOf, rhoOf,
     fracBelow, nuOf, buildClock, hoursFor, salesWithin, probAtLeast, levelsOf, ufloorOf, fungibleRate, unknownBelow, minResale, bestLot, sigmaOf, tpFactor, tpNowPrice,
-    tpOffers, feedProblem, itemType, patternFamily, isPatternItem, fmtPatX, durTxt, patStatusOf, fmtWhen, listedInfo, lotListedInfo };
+    tpOffers, feedProblem, itemType, patternFamily, isPatternItem, fmtPatX, durTxt, patLocked, patLockOk, patStatusOf, fmtWhen, listedInfo, lotListedInfo };
 }
 
 // =====================================================================================
@@ -742,7 +755,7 @@ if (typeof document !== "undefined") (function () {
   const KEY = "skingap_annonces_v1";
   const DEFAULTS = { tab: "lots", minEur: 0.5, minPct: 5, priceMin: null, priceMax: null, horizon: 48, budget: null,
     z: 1, maxDays: 8, tpProb: 50, tpSell: "after", unknown: "estimate", type: "all", cat: "", sortLots: "gain", sortTp: "gap", search: "",
-    patFam: "", patSt: "all", sortPat: "recent" };
+    patFam: "", patSt: "all", patLock: "all", sortPat: "recent" };
   const SORTS = {
     lots: [["gain", "Gain total (haut → bas)"], ["roi", "ROI % (haut → bas)"], ["fast", "Vente la plus rapide"],
       ["cost", "Coût (bas → haut)"], ["size", "Nombre d'annonces (haut → bas)"], ["recent", "Plus récentes"], ["name", "Nom (A-Z)"]],
@@ -890,6 +903,7 @@ if (typeof document !== "undefined") (function () {
       if (S.patFam && c.fam !== S.patFam) continue;
       const st = patStatusOf(c, now);
       if (S.patSt !== "all" && st.key !== S.patSt) continue;
+      if (!patLockOk(c, S.patLock, now)) continue;
       if (S.priceMin !== null && c.p < S.priceMin) continue;
       if (S.priceMax !== null && c.p > S.priceMax) continue;
       out.push({ key: c.a + "|" + c.pc, it, c, st });
@@ -1082,7 +1096,8 @@ if (typeof document !== "undefined") (function () {
   function patRow(r, tbody) {
     const { it, c, st } = r, tr = el("tr", "main"), now = Date.now();
     tr.appendChild(toggleCell(r.key));
-    const extra = PAT_FAMILY_LABEL[c.fam] + (c.tp ? " · trade-protect " + Math.max(0, (c.lk - now) / 86400e3).toFixed(1) + " j" : " · tradable")
+    const extra = PAT_FAMILY_LABEL[c.fam] + (patLocked(c, now) ? " · trade-protect " + ((c.lk - now) / 86400e3).toFixed(1) + " j"
+      : c.tp ? " · tradable (protection finie)" : " · tradable")
       + (c.alerted ? " · 🔔 alerte" : "");
     tr.appendChild(nameCell(it, extra));
     tr.appendChild(cell("num", fmtPatX(c.fam, c.x), c.fam !== "charm" && c.seed !== null && c.seed !== undefined ? "seed " + c.seed : ""));
@@ -1102,7 +1117,8 @@ if (typeof document !== "undefined") (function () {
     dtd.appendChild(el("div", "detail-info", [
       fmtPatX(c.fam, c.x) + (c.fam !== "charm" && c.seed !== null && c.seed !== undefined ? " (seed " + c.seed + ")" : "")
         + " à " + eur(c.p) + ", prix suggéré " + eur(c.sp) + (c.fam === "charm" ? ", prix habituel du charm ≈ " + eur(c.base) : ""),
-      c.tp ? "trade-protect jusqu'au " + new Date(c.lk).toLocaleDateString("fr-FR") : "tradable",
+      patLocked(c, now) ? "trade-protect jusqu'au " + new Date(c.lk).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })
+        : c.tp ? "protection finie le " + new Date(c.lk).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) + " : tradable" : "tradable",
       c.nst ? c.nst + " sticker(s) appliqué(s)" : "", c.nch ? "charm appliqué" : "",
       "revente estimée ≥ " + eur(c.V) + " (net " + eur(net(c.V)) + ") : la plus basse des " + c.n_comps + " vente(s) comparable(s), ramenée au prix suggéré actuel",
       "revente sans doute lente : peu d'acheteurs cherchent un pattern précis",
@@ -1139,7 +1155,7 @@ if (typeof document !== "undefined") (function () {
   // filtres de l'onglet courant diffèrent des réglages par défaut.
   const FKEYS = { all: ["priceMin", "priceMax", "type", "cat"],
     lots: ["minEur", "minPct", "horizon", "unknown", "budget"], tp: ["minEur", "minPct", "z", "tpProb", "maxDays", "tpSell"],
-    pat: ["patFam", "patSt"] };
+    pat: ["patFam", "patSt", "patLock"] };
   function updateFiltersBtn() {
     const n = FKEYS.all.concat(FKEYS[S.tab] || []).filter(k => (S[k] ?? null) !== (DEFAULTS[k] ?? null)).length;
     $("filtersBtn").textContent = "⚙ Filtres" + (n ? " (" + n + ")" : "") + (document.body.classList.contains("filters-open") ? " ▴" : " ▾");
@@ -1190,7 +1206,7 @@ if (typeof document !== "undefined") (function () {
     $("priceMin").value = S.priceMin ?? ""; $("priceMax").value = S.priceMax ?? "";
     $("budget").value = S.budget ?? ""; $("z").value = S.z; $("maxDays").value = S.maxDays; $("tpProb").value = S.tpProb;
     $("tpSell").value = S.tpSell; $("unkSel").value = S.unknown; $("typeSel").value = S.type; $("catSel").value = S.cat; $("search").value = S.search;
-    $("patFamSel").value = S.patFam; $("patStSel").value = S.patSt;
+    $("patFamSel").value = S.patFam; $("patStSel").value = S.patSt; $("patLockSel").value = S.patLock;
     $("searchClear").classList.toggle("show", !!S.search);
     const sel = $("sortSel"); sel.innerHTML = "";
     for (const [v, label] of SORTS[S.tab]) { const o = el("option", "", label); o.value = v; sel.appendChild(o); }
@@ -1215,6 +1231,7 @@ if (typeof document !== "undefined") (function () {
   $("catSel").onchange = e => { S.cat = e.target.value; changed(); };
   $("patFamSel").onchange = e => { S.patFam = e.target.value; changed(); };
   $("patStSel").onchange = e => { S.patSt = e.target.value; changed(); };
+  $("patLockSel").onchange = e => { S.patLock = e.target.value; changed(); };
   $("sortSel").onchange = e => { S[SORT_KEY[S.tab]] = e.target.value; changed(); };
   $("search").oninput = e => { S.search = e.target.value; $("searchClear").classList.toggle("show", !!S.search); changed(); };
   $("searchClear").onclick = () => { S.search = ""; syncControls(); changed(); };
