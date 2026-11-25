@@ -277,4 +277,52 @@ test("patterns : affichage du # et de ce qu'est devenue l'annonce", () => {
   assert.strictEqual(l.sub, "vue il y a 3 j 0 h");
 });
 
+test("heure de mise en vente : aujourd'hui, hier, date (heure locale)", () => {
+  const at = (d, h, m) => new Date(2026, 10, d, h, m).getTime();
+  assert.strictEqual(A.fmtWhen(at(25, 14, 32), at(25, 15, 0)), "14:32");
+  assert.strictEqual(A.fmtWhen(at(25, 0, 5), at(25, 23, 59)), "00:05");
+  assert.strictEqual(A.fmtWhen(at(24, 23, 10), at(25, 0, 30)), "hier 23:10");
+  assert.strictEqual(A.fmtWhen(at(24, 9, 5), at(26, 0, 30)), "24/11 09:05");
+});
+
+test("mise en vente : vue dans le flux, prix changé, remise en vente, min API estimé", () => {
+  const at = (d, h, m) => new Date(2026, 10, d, h, m).getTime();
+  const t = at(25, 14, 32), now = t + 37 * 60e3;
+  const v = A.listedInfo({ p: 25.07, t, t1: t, pp: null }, now);
+  assert.deepStrictEqual([v.main, v.sub, v.t], ["14:32", "il y a 37 min", t]);
+  assert.strictEqual(A.listedInfo({ p: 25.07, t, t1: at(20, 10, 21), pp: 3162 }, now).sub, "prix changé, était 31.62 €");
+  assert.strictEqual(A.listedInfo({ p: 31.62, t, t1: t - 3600e3, pp: 3162 }, now).sub, "remise en vente");
+  // l'Asiimov du 25/11 : min API descendu de 27,16 à 26,00 € sur la photo de 11:40
+  const S = at(25, 11, 40), R = at(25, 9, 10);
+  const u = A.listedInfo({ unknown: true, when: [S, S, false] }, now);
+  assert.deepStrictEqual([u.main, u.sub, u.t], ["≈ 11:40", "photo API", S]);
+  const r = A.listedInfo({ unknown: true, when: [S, R, false] }, now);
+  assert.deepStrictEqual([r.main, r.sub, r.t], ["≤ 11:40", "après 09:10", R], "cachée par une moins chère : entre R et S, triée à R");
+  assert.strictEqual(A.listedInfo({ unknown: true, when: [S, at(20, 3, 50), true] }, now).sub, "peut-être bien avant");
+  assert.strictEqual(A.listedInfo({ unknown: true, when: null }, now).main, "—");
+  assert.strictEqual(A.listedInfo({ p: 3, t: null }, now).main, "—", "ancien book.json sans heures");
+});
+
+test("lot et trade-protect : heure de chaque annonce, la plus récente du lot", () => {
+  const T = new Date(2026, 10, 25, 9, 0).getTime();
+  const b = example();
+  b.tradable = b.tradable.map((x, i) => x.concat([T + i * 600e3, T + i * 600e3, null]));
+  const lot = A.bestLot(item(), b, ctx());
+  assert.strictEqual(lot.k, 7);
+  assert.deepStrictEqual([...lot.units.map(u => u.t)], [0, 1, 2, 3, 4, 5, 6].map(i => T + i * 600e3));   // copie : tableau du bac à sable
+  assert.strictEqual(lot.tNewest, T + 6 * 600e3);
+  const li = A.lotListedInfo(lot, T + 3 * 3600e3);
+  assert.deepStrictEqual([li.main, li.sub], ["10:00", "la plus ancienne 09:00"]);
+  const S = T - 3600e3;
+  const bu = { q_t: 8, known_t: 3, tradable: L(3.5, 4.3, 9).map(x => x.concat([T, T, null])), api_floor_t: 300,
+    api_floor_t_when: [S, S, false], sales_7d: 0, sales_t_7d: 10, sale_p10_p50_p90_7d: [820, 850, 920], arr_t_7d: 0, arr_t_q: null };
+  const lu = A.bestLot(item(), bu, ctx());
+  assert.strictEqual(lu.units[0].unknown, true);
+  assert.deepStrictEqual(lu.units[0].when, [S, S, false], "annonce inconnue : heure estimée transmise");
+  const it = item({ xf: 10, h24: 10, h7: 10, h30: 10, h90: 10, xp: 0.8, ask: 10.5, min: 8.5, xs: 10, xl: 5 });
+  const tp = A.tpOffers(it, { tp: [[850, 5, 0.2, T, T - 86400e3, 900]] }, { z: 1, maxDays: 8, minEur: 0.3, minPct: 4, sell: "after", ageDays: 0 });
+  assert.deepStrictEqual([tp.best.t, tp.best.t1, tp.best.pp], [T, T - 86400e3, 900]);
+  assert.strictEqual(A.listedInfo(tp.best, T + 60e3).sub, "prix changé, était 9.00 €");
+});
+
 console.log(n + " tests OK");

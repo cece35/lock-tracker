@@ -953,6 +953,16 @@ Deux sortes d'annonces passent devant nous :
 
 **Choix du lot** : le k qui maximise le gain total, avec la marge minimale (en € et en %, après commission) sur chaque annonce, le délai (24 ou 48 h) et le budget.
 
+## Mise en vente (25/11/2026)
+
+Une annonce intéressante part en général en moins de 24 h. La colonne **Mise en vente** (lots et offres trade-protect, et le détail de chaque lot) donne l'heure à laquelle l'annonce est apparue ou a été modifiée : « 14:32 » aujourd'hui, sinon « hier 23:10 » ou « 24/11 09:10 ». Le tri **Plus récentes** met les plus fraîches en tête.
+- **Annonce vue dans le flux** : heure exacte de sa dernière mise en vente. Si elle avait déjà été vue, « prix changé » (avec l'ancien prix) ou « remise en vente ». Le flux ne voit pas une simple baisse de prix : la doc Skinport liste un événement `price_changed`, mais le marque « non supporté », et l'enregistreur n'en a jamais reçu.
+- **Annonce inconnue au min de l'API** (« min API, pas vue ») : heure estimée sur les photos de l'API, toutes les 5 min, avec 10 à 20 min de retard. Le carnet garde les 12 derniers changements du min de chaque skin (`min_hist`), reconstitués au départ des photos archivées depuis le 20/11 (`book.py --seed-min-hist`).
+  - « ≈ 11:40 » : le min est descendu à ce prix sur la photo de 11:40 (nouvelle annonce, ou prix baissé peu avant).
+  - « ≤ 11:40, après 09:10 » : une annonce moins chère la cachait ; elle est apparue entre les deux.
+  - « peut-être bien avant » : le min était déjà à ce prix ou moins au début de l'historique.
+- Dans `book.json`, les annonces `tradable` et `tp` sont `[prix, âge, usure, mise en vente, 1re apparition, prix d'avant]`, les niveaux `levels_t` ont l'heure de la dernière mise en vente, et `api_floor_t_when` = `[S, R, plus ancienne]`.
+
 ## Offres trade-protect
 
 Les jours restants de chaque offre sont exacts, lus dans le carnet.
@@ -975,6 +985,8 @@ L'onglet **Patterns rares** montre l'inverse : une annonce vue dans le flux dont
 ## Carnet et maintenance
 
 Un bandeau signale un flux coupé ou un carnet en retard.
+
+**Vente au min API** (`book.py`, 25/11/2026). Quand le flux voit vendre, au min de l'API ou jusqu'à 10 % dessous, une annonce que le carnet ne connaissait pas à ce prix, le « min API » disparaît de la page sans attendre une photo à jour (l'API met jusqu'à ~20 min à refléter une vente). Seulement pour les skins à 30 annonces ou moins, ou à 20 € ou plus : mesuré sur 48 h, c'est juste 81 % des fois ; ailleurs, une autre annonce est souvent au même prix (52 % seulement). Si une photo suivante montre encore ce prix avec une quantité en baisse, l'annonce revient ; au bout de 25 min, on refait confiance à l'API.
 
 Les constantes du modèle (`FS`, `TP`) doivent rester identiques à `FastSellModel`, à la page des prix et à `fast-price.js`.
 
