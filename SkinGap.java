@@ -1308,6 +1308,7 @@ public class SkinGap {
       <div class="tagline">écart prix de vente espéré vs prix d'achat (Min tradable ou offre trade-protect) — __COUNT__ items — généré le __DATE__</div>
     </div>
     <div class="navs">
+      <a class="navlink" href="../recherche" title="Chercher un skin et ouvrir sa fiche">→ recherche</a>
       <a class="navlink" href="annonces.html" title="Lots d'annonces à acheter et offres trade-protect, d'après le carnet d'annonces (flux live)">→ annonces</a>
       <a class="navlink" id="dashLink" href="__DASHBOARD_URL__">→ dashboard</a>
     </div>
