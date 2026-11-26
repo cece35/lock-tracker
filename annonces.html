@@ -15,6 +15,9 @@
   Colonne « Mise en vente » : heure de la dernière mise en vente (ou remise en vente) des annonces vues dans le flux
   (book.json : tradable/tp [prix, âge, usure, mise_en_vente, 1re_apparition, prix_d_avant]), estimée d'après les
   photos de l'API pour l'annonce inconnue au min (api_floor_t_when, voir floor_when dans book.py).
+  Bouton « vérifier » (à côté de « fiche ») : POST ../api/verifier (TradeLockServer, transmis au service
+  skinport-recheck du VM, voir verify dans ~/skinport-watch/recheck.py) avec les annonces de la ligne (verifRequest) ;
+  réponse = état de chaque annonce d'après le flux du téléphone et la photo de l'API, résumé par verifText.
   Les constantes du modèle « Très rapide » (FS, TP) doivent rester identiques à FastSellModel
   (SkinGap.java), à la page des prix et à fast-price.js. Tests : node annonces-test.js
 -->
@@ -27,7 +30,7 @@
   }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font-family:'IBM Plex Mono', ui-monospace, monospace; font-size:13px; line-height:1.5; }
-  .wrap { max-width: 1080px; margin: 0 auto; padding: 24px 14px 60px; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 24px 14px 60px; }
   header { border-bottom:1px solid var(--border); padding-bottom:14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; }
   .wordmark { font-size:16px; } .wordmark span { color:var(--accent); }
   .tagline { color:var(--muted); font-size:12px; margin-top:4px; }
@@ -77,6 +80,20 @@
   .name-cell { display:flex; align-items:center; gap:8px; }
   .name a.fiche { display:inline-block; color:var(--muted); border:1px solid var(--border); border-radius:3px; font-size:10.5px; line-height:1.5; padding:0 6px; margin-left:6px; white-space:nowrap; vertical-align:1px; }
   .name a.fiche:hover { color:var(--accent); border-color:var(--accent-dim); }
+  .name button.verif { font-family:inherit; background:transparent; color:var(--muted); border:1px solid var(--border); border-radius:3px; font-size:10.5px; line-height:1.5; padding:0 6px; margin-left:6px; white-space:nowrap; vertical-align:1px; cursor:pointer; }
+  .name button.verif:hover:not(:disabled) { color:var(--accent); border-color:var(--accent-dim); }
+  .name button.verif:disabled { cursor:wait; opacity:.6; }
+  .verif-res { display:block; font-size:10.5px; margin-top:2px; }
+  .verif-res.ok { color:var(--positive); }
+  .verif-res.bad { color:var(--negative); }
+  .verif-res.part, .verif-res.unk { color:var(--accent); }
+  /* PC : le tableau des lots faisait ~1350 px pour ~1050 de place, la fin (Gain net, Couverture) était coupée.
+     Les sous-textes des colonnes de chiffres passent à la ligne ; le nom garde de quoi tenir sur 2-3 lignes. */
+  @media (min-width: 901px) {
+    table.list > tbody > tr.main > td.num .sub { white-space:normal; }
+    table.list > tbody > tr.main > td.name { min-width:190px; }
+  }
+  @media (min-width: 901px) and (max-width: 1000px) { table.list > tbody > tr.main > td.name { min-width:150px; } }
   .item-thumb { width:36px; height:27px; object-fit:contain; background:var(--surface); border-radius:3px; flex-shrink:0; }
   .toggle { cursor:pointer; color:var(--muted); user-select:none; width:16px; text-align:center; }
   .toggle:hover { color:var(--accent); }
@@ -125,6 +142,7 @@
     .detail table { display:block; overflow-x:auto; }
     .detail table th, .detail table td { white-space:nowrap; }
     .item-thumb { width:44px; height:33px; }
+    .name a.fiche, .name button.verif { font-size:11px; padding:2px 8px; margin-top:3px; }
   }
 </style>
 </head>
@@ -331,6 +349,14 @@
     montre pas les annonces retirées par leur vendeur : <b>en vente ?</b> est à vérifier sur Skinport ; <b>disparue</b>
     = l'API ne la montre plus (retirée, ou vendue pendant une coupure du flux). Filtre <b>Trade lock</b> : selon l'état de
     l'annonce maintenant (une offre trade-protect dont la protection est finie compte comme sans trade lock).<br><br>
+    <b>Vérifier :</b> le bouton à côté de « fiche » demande au VM ce que sont devenues les annonces de la ligne depuis le
+    carnet affiché, d'après le flux que le téléphone lui envoie chaque minute : <b>vendue</b> (et à quelle heure),
+    <b>remise en vente</b> à un autre prix, ou <b>plus sur l'API</b> (une photo de l'API plus récente n'a plus aucune
+    annonce à ce prix : retirée ou vendue). Lots : toutes les annonces du lot (l'état de chacune dans le détail) ;
+    trade-protect : l'offre affichée. Une annonce se reconnaît à son usure ; sans usure (caisses, stickers…), une vente
+    du skin à ce prix compte pour une des annonces (« vente au prix » : ce peut être une autre annonce au même prix).
+    Une vente de la dernière minute peut manquer, et une annonce retirée par son vendeur n'apparaît pas dans le flux :
+    « pas vendue » veut dire « pas vue partir ».<br><br>
     <b>Flux interrompu :</b> si le carnet n'est plus alimenté, un bandeau le signale : les annonces affichées ont pu être
     vendues entre-temps ; la page des prix (agrégats de l'API) reste à jour.
   </details>
@@ -745,10 +771,83 @@ function patStatusOf(c, nowMs) {
     title: "Pas vue vendue ni disparue. Le flux ne montre pas les annonces retirées par leur vendeur : à vérifier sur Skinport." };
 }
 
+// Espaces insécables dans les sous-textes, qui passent à la ligne sur PC : « 46 % », « 7 j », « 12.50 € », « min API »,
+// « j : » restent d'un bloc.
+function nbsp(s) {
+  return typeof s !== "string" ? s
+    : s.replace(/(\d) (?=(?:%|€|j\b|h\b|min\b|ct\b))/g, "$1 ").replace(/ :/g, " :").replace(/min API/g, "min API");
+}
+
+// Bouton « vérifier » : ce que sont devenues les annonces d'une ligne depuis le carnet affiché, d'après le flux reçu
+// du téléphone et la photo de l'API (POST ../api/verifier, service skinport-recheck du VM : verify dans recheck.py).
+// Demande d'une ligne de l'onglet tab : { k : skin du carnet, tp : offre trade-protect, since : dernier événement du
+// flux compté dans ce carnet, photo : sa photo de l'API (ms), units : [{ p : prix en centimes, w : usure, tl : mise
+// en vente (ms), a : assetid, u : annonce inconnue au min de l'API }] }. Lots : toutes les annonces du lot ;
+// trade-protect : l'offre affichée ; patterns rares : l'annonce (assetid).
+function verifRequest(tab, r, book, nowMs) {
+  const base = { since: book.feed_last_event || null, photo: book.rest_t0 || null };
+  const w = x => typeof x === "number" ? x : null;            // usure : nombre (patterns.json : « FT », pas l'usure)
+  if (tab === "lots")
+    return Object.assign(base, { k: r.key, tp: false, units: r.lot.units.map(u =>
+      ({ p: Math.round(u.p * 100), w: w(u.wear), tl: u.t || null, u: !!u.unknown })) });
+  if (tab === "tp") {
+    const o = r.t.best;
+    return Object.assign(base, { k: r.key, tp: true, units: [{ p: Math.round(o.p * 100), w: w(o.wear), tl: o.t || null }] });
+  }
+  const c = r.c;                                                // pattern rare : reconnue à son assetid
+  return Object.assign(base, { k: c.k, tp: patLocked(c, nowMs), units: [{ p: c.pc, a: String(c.a), tl: c.t || null }] });
+}
+function hmsTxt(ms) {
+  const d = new Date(ms), pad = x => String(x).padStart(2, "0");
+  return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+}
+const eurC = c => (c / 100).toFixed(2) + " €";
+// État court d'une annonce (colonne « Vérifié » du détail d'un lot).
+function verifUnitTxt(s, nowMs) {
+  if (s.st === "sold") return "vendue " + fmtWhen(s.t, nowMs) + (s.id ? "" : " (vente au prix)");
+  if (s.st === "relisted") return "remise à " + eurC(s.p);
+  if (s.st === "gone") return "plus sur l'API";
+  return "en vente";
+}
+// Résumé d'une vérification (res = réponse du serveur, units = annonces demandées) : { cls, txt, title } ; cls = ok
+// (toutes encore là), bad (aucune), part (une partie), unk (pas vue partir, mais le flux a pu en manquer). Mêmes mots
+// que le bouton « Revérifier » des notifications ntfy.
+function verifText(res, units, nowMs) {
+  const U = res.units || [], left = U.filter(s => s.st === "listed").length;
+  const flux = res.feed_until ? "flux reçu jusqu'à " + hmsTxt(res.feed_until) : "flux jamais reçu";
+  const title = "Vérifié à " + hmsTxt(res.now || nowMs) + " d'après le flux du téléphone (envoyé au VM chaque minute : une vente "
+    + "de la dernière minute peut manquer) et la photo de l'API. Une annonce retirée par son vendeur n'apparaît pas dans le flux.";
+  const cls = left === U.length ? (res.warn ? "unk" : "ok") : left === 0 ? "bad" : "part";
+  const mark = { ok: "✅", bad: "❌", part: "⚠", unk: "❓" }[cls];
+  let txt;
+  if (U.length === 1) {
+    const s = U[0], p = units[0] ? units[0].p : null;
+    txt = s.st === "sold" ? "vendue à " + fmtWhen(s.t, nowMs) + (p !== null && s.p !== p ? " à " + eurC(s.p) : "")
+        + (s.id ? "" : " (une vente à ce prix vue dans le flux)")
+      : s.st === "relisted" ? "remise en vente à " + eurC(s.p) + " à " + fmtWhen(s.t, nowMs) + " : l'annonce à " + eurC(p) + " n'existe plus"
+      : s.st === "gone" ? "plus sur la photo de l'API de " + fmtWhen(s.t, nowMs) + " : retirée ou vendue"
+      : res.warn ? "pas vue vendue, mais " + res.warn
+      : "pas vendue d'après le flux (" + (res.feed_until ? "reçu jusqu'à " + hmsTxt(res.feed_until) : "jamais reçu") + ")";
+  } else {
+    const parts = [];
+    for (const [st, one, many] of [["sold", "vendue", "vendues"], ["relisted", "remise à un autre prix", "remises à un autre prix"],
+        ["gone", "plus sur l'API", "plus sur l'API"], ["listed", "pas vendue", "pas vendues"]]) {
+      const S = U.filter(s => s.st === st).sort((a, b) => a.t - b.t);
+      if (!S.length) continue;
+      const hm = [...new Set(S.map(s => fmtWhen(s.t, nowMs)))];   // achat groupé : même heure une seule fois
+      const when = st !== "sold" ? "" : " (" + hm.slice(0, 3).join(", ") + (hm.length > 3 ? "…" : "") + ")";
+      parts.push(S.length + " " + (S.length > 1 ? many : one) + when);
+    }
+    txt = "sur " + U.length + " : " + parts.join(", ") + " · " + flux + (res.warn && left ? " · " + res.warn : "");
+  }
+  return { cls, txt: mark + " " + txt, title };
+}
+
 if (typeof module !== "undefined") {
   module.exports = { taxRate, net, floorCents, FS, TP, catOf, famOf, accept, lambdaOf, medianOf, capOf, rhoOf,
     fracBelow, nuOf, buildClock, hoursFor, salesWithin, probAtLeast, levelsOf, ufloorOf, fungibleRate, unknownBelow, minResale, bestLot, sigmaOf, tpFactor, tpNowPrice,
-    tpOffers, feedProblem, itemType, patternFamily, isPatternItem, fmtPatX, durTxt, patLocked, patLockOk, patStatusOf, fmtWhen, listedInfo, lotListedInfo };
+    tpOffers, feedProblem, itemType, patternFamily, isPatternItem, fmtPatX, durTxt, patLocked, patLockOk, patStatusOf, fmtWhen, listedInfo, lotListedInfo,
+    nbsp, verifRequest, verifText, verifUnitTxt, hmsTxt };
 }
 
 // =====================================================================================
@@ -825,10 +924,51 @@ if (typeof document !== "undefined") (function () {
   function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
   function cell(cls, main, sub, title) {
     const td = el("td", cls);
-    if (main instanceof Node) td.appendChild(main); else td.appendChild(document.createTextNode(main));
-    if (sub) td.appendChild(el("span", "sub", sub));
+    if (main instanceof Node) td.appendChild(main); else td.appendChild(document.createTextNode(nbsp(main)));
+    if (sub) td.appendChild(el("span", "sub", nbsp(sub)));
     if (title) td.title = title;
     return td;
+  }
+
+  // Vérifications (bouton « vérifier ») : onglet|ligne -> { sig : annonces demandées, busy, prev, res | err }. Gardées
+  // tant que la ligne montre les mêmes annonces (le carnet est rechargé toutes les 3 min).
+  const VERIF = new Map();
+  function verifFor(r) {
+    const req = verifRequest(S.tab, r, BOOK, Date.now());
+    return { id: S.tab + "|" + r.key, req, sig: JSON.stringify([req.k, req.units]) };
+  }
+  function verifState(vf) {
+    const v = VERIF.get(vf.id);
+    return v && v.sig === vf.sig ? v : null;
+  }
+  async function runVerif(vf) {
+    const cur = verifState(vf);
+    if (cur && cur.busy) return;
+    VERIF.set(vf.id, { sig: vf.sig, busy: true, prev: cur && !cur.busy ? cur : null });
+    renderRows();
+    let v;
+    try {
+      const r = await fetch("../api/verifier", { method: "POST", cache: "no-store",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify(vf.req) });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d || !Array.isArray(d.units) || d.units.length !== vf.req.units.length)
+        throw new Error(d && d.error ? d.error : "HTTP " + r.status);
+      v = { sig: vf.sig, res: d };
+    } catch (e) {
+      v = { sig: vf.sig, err: "vérification impossible : " + e.message };
+    }
+    VERIF.set(vf.id, v);
+    renderRows();
+  }
+  // Ligne « ✅ pas vendue d'après le flux… » sous le nom (résultat précédent pendant une nouvelle vérification).
+  function verifLine(vf) {
+    let v = verifState(vf);
+    if (v && v.busy) v = v.prev;
+    if (!v) return null;
+    const t = v.err ? { cls: "unk", txt: "⚠ " + v.err, title: "" } : verifText(v.res, vf.req.units, Date.now());
+    const s = el("span", "verif-res " + t.cls, t.txt);
+    if (t.title) s.title = t.title;
+    return s;
   }
 
   async function fetchJson(url) {
@@ -962,7 +1102,7 @@ if (typeof document !== "undefined") (function () {
     $("thead").innerHTML = ""; $("thead").appendChild(tr);
   }
 
-  function nameCell(it, extra, href) {
+  function nameCell(it, extra, href, vf) {
     const td = el("td", "name"), wrap = el("div", "name-cell");
     if (it.i) { const img = el("img", "item-thumb"); img.src = it.i; img.alt = ""; img.loading = "lazy"; wrap.appendChild(img); }
     const box = el("div"), a = el("a", "", it.n);
@@ -972,7 +1112,19 @@ if (typeof document !== "undefined") (function () {
     const f = el("a", "fiche", "fiche");
     f.href = "../skin?name=" + encodeURIComponent(it.n); f.title = "Fiche du skin : prix et ventes vues dans le flux";
     box.appendChild(f);
+    if (vf) {
+      const cur = verifState(vf), n = vf.req.units.length;
+      const b = el("button", "verif", cur && cur.busy ? "vérification…" : cur ? "revérifier" : "vérifier");
+      b.type = "button";
+      b.disabled = !!(cur && cur.busy);
+      b.title = "Regarder dans le flux du téléphone si " + (n > 1 ? "ces " + n + " annonces sont vendues" : "l'annonce est vendue")
+        + " depuis le carnet affiché";
+      b.onclick = () => runVerif(vf);
+      box.appendChild(b);
+    }
     if (extra) box.appendChild(el("span", "sub", extra));
+    const line = vf ? verifLine(vf) : null;
+    if (line) box.appendChild(line);
     wrap.appendChild(box); td.appendChild(wrap);
     return td;
   }
@@ -984,9 +1136,9 @@ if (typeof document !== "undefined") (function () {
   }
 
   function lotRow(r, tbody) {
-    const { it, b, lot } = r, tr = el("tr", "main");
+    const { it, b, lot } = r, tr = el("tr", "main"), vf = verifFor(r);
     tr.appendChild(toggleCell(r.key));
-    tr.appendChild(nameCell(it, catOf(it) + " · ≈ " + lot.lam.toFixed(lot.lam < 10 ? 1 : 0) + " ventes/j"));
+    tr.appendChild(nameCell(it, catOf(it) + " · ≈ " + lot.lam.toFixed(lot.lam < 10 ? 1 : 0) + " ventes/j", null, vf));
     const lo = lot.units[0].p, hi = lot.units[lot.k - 1].p;
     tr.appendChild(cell("num", lot.k + (lot.k > 1 ? " annonces" : " annonce"),
       (hi > lo ? eur(lo) + " → " + eur(hi) : (lot.k > 1 ? "à " : "") + eur(lo)) + (lot.unknownIncluded ? " · dont min API" : "")));
@@ -1035,9 +1187,12 @@ if (typeof document !== "undefined") (function () {
     ];
     info.textContent = parts.filter(Boolean).join(" · ");
     dtd.appendChild(info);
+    // État de chaque annonce après « vérifier » (même ordre que lot.units).
+    const vs = verifState(vf), vu = vs && vs.res ? vs.res.units : null, now = Date.now();
     const t = el("table"), th = el("tr");
     if (lot.k > 12) {         // gros lot (caisses…) : une ligne par prix
-      for (const h of ["Prix", "Nombre", "Dernière mise en vente", "Gain net / u", "Vente du dernier"]) th.appendChild(el("th", h === "Prix" ? "" : "num", h));
+      for (const h of ["Prix", "Nombre"].concat(vu ? ["Vérifié"] : [], ["Dernière mise en vente", "Gain net / u", "Vente du dernier"]))
+        th.appendChild(el("th", h === "Prix" ? "" : "num", h));
       t.appendChild(th);
       let rank = 0;
       for (const l of lot.levels) {
@@ -1047,6 +1202,10 @@ if (typeof document !== "undefined") (function () {
         if (l.unknown) pc.appendChild(el("span", "sub unk", "min API, pas vue"));
         ur.appendChild(pc);
         ur.appendChild(el("td", "num", String(l.n)));
+        if (vu) {
+          const gone = vu.slice(rank - l.n, rank).filter(s => s.st !== "listed").length;
+          ur.appendChild(el("td", "num " + (gone ? "neg" : "pos"), gone ? gone + " sur " + l.n + " partie" + (gone > 1 ? "s" : "") : "en vente"));
+        }
         const li = l.unknown ? listedInfo(l, Date.now()) : { main: l.t ? fmtWhen(l.t, Date.now()) : "—", sub: "la plus ancienne il y a " + ageTxt(l.age) };
         ur.appendChild(cell("num", li.main, li.sub, li.title));
         ur.appendChild(el("td", "num " + (l.gain >= 0 ? "pos" : "neg"), signed(l.gain)));
@@ -1058,7 +1217,8 @@ if (typeof document !== "undefined") (function () {
       tbody.appendChild(dtr);
       return;
     }
-    for (const h of ["Rang", "Prix", "Mise en vente", "Usure", "Gain net", "Vente estimée"]) th.appendChild(el("th", h === "Rang" ? "" : "num", h));
+    for (const h of ["Rang", "Prix"].concat(vu ? ["Vérifié"] : [], ["Mise en vente", "Usure", "Gain net", "Vente estimée"]))
+      th.appendChild(el("th", h === "Rang" ? "" : "num", h));
     t.appendChild(th);
     lot.units.forEach((u, i) => {
       const ur = el("tr");
@@ -1066,6 +1226,7 @@ if (typeof document !== "undefined") (function () {
       const pc = cell("num", eur(u.p));
       if (u.unknown) { pc.appendChild(el("span", "sub unk", "min API, pas vue")); }
       ur.appendChild(pc);
+      if (vu) ur.appendChild(el("td", "num " + (vu[i].st === "listed" ? "pos" : "neg"), verifUnitTxt(vu[i], now)));
       const li = listedInfo(u, Date.now());
       ur.appendChild(cell("num", li.main, li.sub, li.title));
       ur.appendChild(el("td", "num", u.wear === null || u.wear === undefined ? "—" : u.wear.toFixed(4)));
@@ -1081,7 +1242,7 @@ if (typeof document !== "undefined") (function () {
   function tpRow(r, tbody) {
     const { it, b, t } = r, o = t.best, tr = el("tr", "main");
     tr.appendChild(toggleCell(r.key));
-    tr.appendChild(nameCell(it, catOf(it) + " · σ ≈ " + (t.sigma.s * 100).toFixed(1) + " %/j"));
+    tr.appendChild(nameCell(it, catOf(it) + " · σ ≈ " + (t.sigma.s * 100).toFixed(1) + " %/j", null, verifFor(r)));
     tr.appendChild(cell("num", eur(o.p), o.wear === null || o.wear === undefined ? "" : "usure " + o.wear.toFixed(4)));
     const li = listedInfo(o, Date.now());
     tr.appendChild(cell("num", li.main, li.sub, li.title));
@@ -1127,7 +1288,8 @@ if (typeof document !== "undefined") (function () {
       + (c.alerted ? " · 🔔 alerte" : "");
     // Le nom ouvre toutes les offres de l'item (pour comparer) ; « seed N » ouvre seulement cet exemplaire (&pattern=).
     const seedOk = c.fam !== "charm" && c.seed !== null && c.seed !== undefined;
-    tr.appendChild(nameCell(it, extra));
+    // « vérifier » seulement pour une offre peut-être encore en vente (vendue ou disparue : déjà dans « Statut »).
+    tr.appendChild(nameCell(it, extra, null, r.st.key === "listed" ? verifFor(r) : null));
     const xtd = cell("num", fmtPatX(c.fam, c.x));
     if (seedOk) {
       const sa = el("a", "sub", "seed " + c.seed);
