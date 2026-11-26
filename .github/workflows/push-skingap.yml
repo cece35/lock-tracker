@@ -36,6 +36,19 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Images des autocollants, caisses, agents… (≈ 60 Mo de catalogues ByMykel) : condensées une fois par jour
+      # par SkinGap.java dans img-cache/, gardé entre les runs (clé du jour : un seul enregistrement par jour).
+      - name: Date du jour (cache d'images)
+        id: jour
+        run: echo "d=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache d'images
+        uses: actions/cache@v4
+        with:
+          path: img-cache
+          key: images-v1-${{ steps.jour.outputs.d }}
+          restore-keys: images-v1-
+
       - name: Génération du rapport SkinGap
         env:
           SKINPORT_CLIENT_ID: ${{ secrets.SKINPORT_CLIENT_ID }}

@@ -457,6 +457,71 @@ public class SkinGap {
         return response.body();
     }
 
+    static final String IMAGES_EXTRA = "img-cache/images-extra.json";
+    static final String[] IMAGES_EXTRA_FILES = {"crates", "stickers", "sticker_slabs", "graffiti", "agents", "music_kits",
+            "patches", "keychains", "collectibles", "keys", "highlights", "tools"};
+
+    // {market_hash_name: image} des items hors skins d'armes. Fichier local de moins de 24 h réutilisé ; sinon
+    // retéléchargé (un fichier en échec n'empêche pas les autres) ; ancien fichier gardé si tout échoue.
+    @SuppressWarnings("unchecked")
+    static Map<String, String> extraImages(HttpClient client) {
+        Map<String, String> out = new HashMap<>();
+        Path cache = Path.of(IMAGES_EXTRA);
+        Map<String, Object> old = null;
+        try {
+            if (Files.exists(cache)) old = (Map<String, Object>) new JsonParser(Files.readString(cache, StandardCharsets.UTF_8)).parse();
+        } catch (Exception e) {
+            System.err.println("Cache d'images illisible, retéléchargé : " + e.getMessage());
+        }
+        if (old != null && old.get("t") instanceof Number && old.get("m") instanceof Map
+                && System.currentTimeMillis() - ((Number) old.get("t")).longValue() < 24L * 3600 * 1000) {
+            for (Map.Entry<String, Object> e : ((Map<String, Object>) old.get("m")).entrySet()) out.put(e.getKey(), (String) e.getValue());
+            System.out.println("Images hors skins : cache du jour (" + out.size() + " entrées).");
+            return out;
+        }
+        int ok = 0;
+        for (String f : IMAGES_EXTRA_FILES) {
+            try {
+                Object parsed = new JsonParser(fetchPlain(client,
+                        "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/" + f + ".json")).parse();
+                Collection<Object> list = parsed instanceof Map ? ((Map<String, Object>) parsed).values() : (List<Object>) parsed;
+                for (Object o : list) {
+                    if (!(o instanceof Map)) continue;
+                    Map<String, Object> item = (Map<String, Object>) o;
+                    Object name = item.get("market_hash_name") != null ? item.get("market_hash_name") : item.get("name");
+                    Object img = item.get("image");
+                    if (name instanceof String && img instanceof String && !((String) img).isEmpty()) out.putIfAbsent((String) name, (String) img);
+                }
+                ok++;
+            } catch (Exception e) {
+                System.err.println("Images " + f + " indisponibles : " + e.getMessage());
+            }
+        }
+        if (ok == 0 && old != null && old.get("m") instanceof Map) {   // GitHub injoignable : on garde l'ancien
+            for (Map.Entry<String, Object> e : ((Map<String, Object>) old.get("m")).entrySet()) out.put(e.getKey(), (String) e.getValue());
+            System.out.println("Images hors skins : téléchargement raté, ancien cache (" + out.size() + " entrées).");
+            return out;
+        }
+        if (ok == IMAGES_EXTRA_FILES.length) {   // cache écrit seulement complet : sinon nouvel essai au run suivant
+            try {
+                StringBuilder sb = new StringBuilder("{\"t\":").append(System.currentTimeMillis()).append(",\"m\":{");
+                boolean first = true;
+                for (Map.Entry<String, String> e : out.entrySet()) {
+                    if (!first) sb.append(',');
+                    first = false;
+                    sb.append('"').append(jsonEscape(e.getKey())).append("\":\"").append(jsonEscape(e.getValue())).append('"');
+                }
+                sb.append("}}");
+                Files.createDirectories(cache.getParent());
+                Files.writeString(cache, sb.toString(), StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                System.err.println("Cache d'images non écrit : " + e.getMessage());
+            }
+        }
+        System.out.println("Images hors skins : " + ok + "/" + IMAGES_EXTRA_FILES.length + " fichiers, " + out.size() + " entrées.");
+        return out;
+    }
+
     static double asDouble(Object o) { return o == null ? 0.0 : (Double) o; }
 
     // Médiane pondérée par le volume de chaque fenêtre (24h/7j/30j/90j). Les fenêtres étant
@@ -940,6 +1005,13 @@ public class SkinGap {
         } catch (Exception e) {
             System.err.println("Catalogue d'images indisponible, on continue sans : " + e.getMessage());
         }
+        // Le catalogue ci-dessus ne contient que les skins d'armes / couteaux / gants : autocollants, caisses,
+        // agents, graffitis, kits de musique, écussons, porte-clés… (≈ 11 600 items sur 25 000) restaient sans
+        // image (demande du 27/11). Leurs images viennent des autres fichiers du même projet, gros (≈ 60 Mo en
+        // tout) mais quasi figés : condensés une fois par jour dans IMAGES_EXTRA (gardé d'un run à l'autre par
+        // actions/cache), réutilisés sinon.
+        for (Map.Entry<String, String> e : extraImages(client).entrySet()) imageByName.putIfAbsent(e.getKey(), e.getValue());
+        System.out.println("Images en tout : " + imageByName.size() + " entrées.");
 
         Map<String, SalesVolumes> volumesByName = new HashMap<>();
         Map<String, SalesWindows> windowsByName = new HashMap<>();
