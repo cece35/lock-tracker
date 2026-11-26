@@ -1124,10 +1124,17 @@ if (typeof document !== "undefined") (function () {
     const extra = PAT_FAMILY_LABEL[c.fam] + (patLocked(c, now) ? " · trade-protect " + ((c.lk - now) / 86400e3).toFixed(1) + " j"
       : c.tp ? " · tradable (protection finie)" : " · tradable")
       + (c.alerted ? " · 🔔 alerte" : "");
-    // Skins : le lien filtre sur le seed de l'offre (&pattern=), pour tomber sur cet exemplaire et pas sur le moins cher.
+    // Le nom ouvre toutes les offres de l'item (pour comparer) ; « seed N » ouvre seulement cet exemplaire (&pattern=).
     const seedOk = c.fam !== "charm" && c.seed !== null && c.seed !== undefined;
-    tr.appendChild(nameCell(it, extra, buildLink(it) + (seedOk ? "&pattern=" + c.seed : "")));
-    tr.appendChild(cell("num", fmtPatX(c.fam, c.x), c.fam !== "charm" && c.seed !== null && c.seed !== undefined ? "seed " + c.seed : ""));
+    tr.appendChild(nameCell(it, extra));
+    const xtd = cell("num", fmtPatX(c.fam, c.x));
+    if (seedOk) {
+      const sa = el("a", "sub", "seed " + c.seed);
+      sa.href = buildLink(it) + "&pattern=" + c.seed; sa.target = "_blank"; sa.rel = "noopener";
+      sa.title = "Seulement les offres de ce seed sur Skinport";
+      xtd.appendChild(sa);
+    }
+    tr.appendChild(xtd);
     tr.appendChild(cell("num", eur(c.p), "normal ≈ " + eur(c.base)));
     tr.appendChild(cell("num", "≥ " + eur(c.V), "net " + eur(net(c.V)), "Plus basse des ventes comparables, ramenée au prix suggéré actuel (autre usure : moitié)"));
     const g = cell("num", signed(c.g), "+" + c.pct + " %"); g.classList.add("pos"); tr.appendChild(g);
