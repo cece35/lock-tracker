@@ -335,4 +335,71 @@ test("lot et trade-protect : heure de chaque annonce, la plus récente du lot", 
   assert.strictEqual(A.listedInfo(tp.best, T + 60e3).sub, "prix changé, était 9.00 €");
 });
 
+test("sous-textes : espaces insécables là où la ligne ne doit pas couper", () => {
+  const N = " ";
+  assert.strictEqual(A.nbsp("lot entier < 7 j : 46 %"), "lot entier < 7" + N + "j" + N + ": 46" + N + "%");
+  assert.strictEqual(A.nbsp("313.46 € · dont min API"), "313.46" + N + "€ · dont min" + N + "API");
+  assert.strictEqual(A.nbsp("net 12.00 € · 1 ct sous le reste du marché (12.34 €)"),
+    "net 12.00" + N + "€ · 1" + N + "ct sous le reste du marché (12.34" + N + "€)");
+  assert.strictEqual(A.nbsp("la plus ancienne hier 23:10"), "la plus ancienne hier 23:10", "rien à lier");
+  assert.strictEqual(A.nbsp("il y a 37 min"), "il y a 37" + N + "min");
+  assert.strictEqual(A.nbsp(null), null);
+});
+
+test("vérifier : demande envoyée pour un lot, une offre trade-protect, un pattern rare", () => {
+  const T = new Date(2026, 10, 26, 18, 0).getTime();
+  const book = { feed_last_event: T, rest_t0: T - 300e3 };
+  const b = example();
+  b.tradable = b.tradable.map((x, i) => x.concat([T - i * 600e3, T - i * 600e3, null]));
+  b.tradable[1][2] = null;                                      // sticker / caisse : pas d'usure
+  b.api_floor_t = 290; b.api_floor_t_when = [T, T, false];      // annonce inconnue au min de l'API, moins chère
+  const lot = A.bestLot(item(), b, ctx());
+  const rq = A.verifRequest("lots", { key: "AK-47 | Test (Field-Tested)", lot }, book, T);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(rq)), { since: T, photo: T - 300e3, k: "AK-47 | Test (Field-Tested)", tp: false,
+    units: [{ p: 290, w: null, tl: null, u: true }].concat(lot.units.slice(1).map((u, i) => ({ p: Math.round(u.p * 100), w: i === 1 ? null : 0.25,
+      tl: T - i * 600e3, u: false }))) });
+  assert.strictEqual(rq.units.length, lot.k);
+  const tp = { key: "X [Phase 2]", t: { best: { p: 8.5, wear: 0.2, t: T - 3600e3 } } };
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(A.verifRequest("tp", tp, book, T))),
+    { since: T, photo: T - 300e3, k: "X [Phase 2]", tp: true, units: [{ p: 850, w: 0.2, tl: T - 3600e3 }] });
+  const c = { k: "Five-SeveN | Heat Treated (Field-Tested)", a: "54667417296", pc: 157, wear: "FT", t: T - 7200e3, lk: T + 86400e3 };
+  const rp = A.verifRequest("pat", { key: "54667417296|157", c }, book, T);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(rp.units)), [{ p: 157, a: "54667417296", tl: T - 7200e3 }], "patterns.json : wear = « FT », pas envoyé");
+  assert.strictEqual(A.verifRequest("tp", { key: "x", t: { best: { p: 1, wear: "FT", t: T } } }, book, T).units[0].w, null);
+  assert.strictEqual(rp.k, c.k);
+  assert.strictEqual(rp.tp, true, "encore sous protection");
+  assert.strictEqual(A.verifRequest("pat", { c: Object.assign({}, c, { lk: T - 1 }) }, book, T).tp, false, "protection finie : tradable");
+});
+
+test("vérifier : texte du résultat (une annonce, plusieurs, flux coupé)", () => {
+  const at = (h, m, s) => new Date(2026, 10, 26, h, m, s || 0).getTime();
+  const now = at(19, 12, 30), base = { feed_until: at(19, 12, 5), photo: at(19, 10), now, warn: null };
+  const one = (s, p) => A.verifText(Object.assign({}, base, { units: [s] }), [{ p: p ?? 1000 }], now);
+  let v = one({ st: "listed", id: true });
+  assert.deepStrictEqual([v.cls, v.txt], ["ok", "✅ pas vendue d'après le flux (reçu jusqu'à 19:12:05)"]);
+  assert.ok(v.title.includes("19:12:30") && v.title.includes("retirée par son vendeur"));
+  v = one({ st: "sold", t: at(19, 5), p: 1000, id: true });
+  assert.deepStrictEqual([v.cls, v.txt], ["bad", "❌ vendue à 19:05"]);
+  assert.strictEqual(one({ st: "sold", t: at(19, 5), p: 999, id: false }).txt, "❌ vendue à 19:05 à 9.99 € (une vente à ce prix vue dans le flux)");
+  assert.strictEqual(one({ st: "relisted", t: at(19, 7), p: 1100, id: true }).txt,
+    "❌ remise en vente à 11.00 € à 19:07 : l'annonce à 10.00 € n'existe plus");
+  assert.strictEqual(one({ st: "gone", t: at(19, 10), p: 1500, id: true }).txt, "❌ plus sur la photo de l'API de 19:10 : retirée ou vendue");
+  v = A.verifText(Object.assign({}, base, { warn: "flux coupé depuis 19:02 : vente pas vérifiable", units: [{ st: "listed", id: true }] }), [{ p: 1000 }], now);
+  assert.deepStrictEqual([v.cls, v.txt], ["unk", "❓ pas vue vendue, mais flux coupé depuis 19:02 : vente pas vérifiable"]);
+  const many = A.verifText(Object.assign({}, base, { units: [{ st: "listed" }, { st: "sold", t: at(19, 6), p: 300 }, { st: "sold", t: at(19, 1), p: 300 },
+    { st: "gone", t: at(19, 10) }] }), [{ p: 300 }, { p: 300 }, { p: 300 }, { p: 310 }], now);
+  assert.deepStrictEqual([many.cls, many.txt], ["part", "⚠ sur 4 : 2 vendues (19:01, 19:06), 1 plus sur l'API, 1 pas vendue · flux reçu jusqu'à 19:12:05"]);
+  const all = A.verifText(Object.assign({}, base, { units: [1, 2, 3, 4, 5].map(i => ({ st: "sold", t: at(19, i), p: 5 })) }), [], now);
+  assert.deepStrictEqual([all.cls, all.txt], ["bad", "❌ sur 5 : 5 vendues (19:01, 19:02, 19:03…) · flux reçu jusqu'à 19:12:05"]);
+  const bulk = A.verifText(Object.assign({}, base, { units: [1, 2, 3, 4].map(i => ({ st: "sold", t: at(18, 30, i), p: 17 })) }), [], now);
+  assert.strictEqual(bulk.txt, "❌ sur 4 : 4 vendues (18:30) · flux reçu jusqu'à 19:12:05", "achat groupé : l'heure une fois");
+  const left = A.verifText(Object.assign({}, base, { feed_until: null, warn: "flux pas reçu depuis 18:40 : vente pas vérifiable",
+    units: [{ st: "listed" }, { st: "listed" }] }), [], now);
+  assert.deepStrictEqual([left.cls, left.txt], ["unk", "❓ sur 2 : 2 pas vendues · flux jamais reçu · flux pas reçu depuis 18:40 : vente pas vérifiable"]);
+  assert.strictEqual(A.verifUnitTxt({ st: "sold", t: at(19, 5), id: false }, now), "vendue 19:05 (vente au prix)");
+  assert.strictEqual(A.verifUnitTxt({ st: "relisted", p: 1234 }, now), "remise à 12.34 €");
+  assert.strictEqual(A.verifUnitTxt({ st: "gone" }, now), "plus sur l'API");
+  assert.strictEqual(A.verifUnitTxt({ st: "listed" }, now), "en vente");
+});
+
 console.log(n + " tests OK");
