@@ -2471,7 +2471,9 @@ document.addEventListener("visibilitychange", () => {
     .catch(() => { /* pas grave, le SSE + le refresh 5 min prennent le relais */ });
 });
 </script>
-<script>setTimeout(()=>location.reload(),300000)</script></body>
+<script>setTimeout(()=>location.reload(),300000)</script>
+<!-- Calculatrice de revente (bulle en bas à droite), servie par le serveur du VM (TradeLockServer, CALC_JS) -->
+<script src="../calc.js" defer></script></body>
 </html>
 """;
 

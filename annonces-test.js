@@ -5,7 +5,8 @@ const vm = require("vm");
 const assert = require("assert");
 
 const html = fs.readFileSync(__dirname + "/annonces.html", "utf8");
-const code = html.slice(html.lastIndexOf("<script>") + 8, html.lastIndexOf("</script>"));
+const from = html.lastIndexOf("<script>") + 8;                 // le script de la page (la calculatrice est un <script src>)
+const code = html.slice(from, html.indexOf("</script>", from));
 const sandbox = { module: { exports: {} }, URLSearchParams, Float64Array, Math, Date, Object, Number, isFinite };
 vm.runInNewContext(code, sandbox);
 const A = sandbox.module.exports;
