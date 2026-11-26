@@ -795,13 +795,32 @@ if (typeof document !== "undefined") (function () {
     return dur((min + extra) / 60);
   }
   const EXTERIOR_CODE = { "factory new": 2, "minimal wear": 4, "field-tested": 3, "well-worn": 5, "battle-scarred": 1 };
-  function buildLink(it) {   // même lien que la page des prix : marché Skinport trié par prix croissant
-    let url = it.p + (it.p.includes("?") ? "&" : "?") + "sort=price&order=asc&lock=8";
-    const l = it.n.toLowerCase();
-    for (const [label, code] of Object.entries(EXTERIOR_CODE)) if (l.includes(label)) { url += "&exterior=" + code; break; }
-    url += "&stattrak=" + (l.includes("stattrak") ? 1 : 0) + "&souvenir=" + (l.startsWith("souvenir") ? 1 : 0);
-    return url + "&stickers=0&charms=0&nametag=0&vanilla=0";
+  // Lien Skinport d'un item : sa page marché triée par prix croissant. lock = jours de trade-protect admis
+  // (0 : seulement les annonces instantanées). p = market_page de l'API /v1/items, qui porte la phase des
+  // Doppler (&phase=N). Les filtres dépendent du type d'item (vérifié le 26/11/2026) :
+  //  - usure, StatTrak™, Souvenir, stickers/charms/nametag : seulement les skins d'armes, couteaux et gants
+  //    (sur un sticker, une caisse, un charm, un agent… ils n'ont pas de sens) ;
+  //  - couteaux : vanilla=1 pour le couteau sans skin (« ★ Karambit »), vanilla=0 sinon ;
+  //  - music kits : StatTrak™ explicite (les deux versions sont sur la même page).
+  function skinportLink(p, n, lock) {
+    const l = n.toLowerCase();
+    let url = p || "https://skinport.com/market?search=" + encodeURIComponent(n);
+    url += (url.includes("?") ? "&" : "?") + "sort=price&order=asc&lock=" + (lock === undefined ? 8 : lock);
+    let wear = null;
+    for (const [label, code] of Object.entries(EXTERIOR_CODE)) if (l.includes("(" + label + ")")) { wear = code; break; }
+    const knife = n.startsWith("★") && !l.includes("gloves") && !l.includes("wraps");
+    const vanilla = knife && !n.includes("|");
+    if (wear !== null || vanilla) {
+      if (wear !== null) url += "&exterior=" + wear;
+      url += "&stattrak=" + (l.includes("stattrak") ? 1 : 0) + "&souvenir=" + (l.startsWith("souvenir ") ? 1 : 0);
+      url += "&stickers=0&charms=0&nametag=0";
+      if (knife) url += "&vanilla=" + (vanilla ? 1 : 0);
+    } else if (l.includes("music kit")) {
+      url += "&stattrak=" + (l.includes("stattrak") ? 1 : 0);
+    }
+    return url;
   }
+  function buildLink(it) { return skinportLink(it.p, it.n, 8); }   // même lien que la page des prix
   function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
   function cell(cls, main, sub, title) {
     const td = el("td", cls);
@@ -900,7 +919,7 @@ if (typeof document !== "undefined") (function () {
     if (!PAT) return [];
     const now = Date.now(), out = [];
     for (const c of PAT.cands || []) {
-      const it = BY_NAME.get(c.k) || { n: c.k, p: "https://skinport.com/market?item=" + encodeURIComponent(c.n) };
+      const it = BY_NAME.get(c.k) || { n: c.k, p: null };
       if (!passCommon(it)) continue;
       if (S.patFam && c.fam !== S.patFam) continue;
       const st = patStatusOf(c, now);
@@ -942,11 +961,11 @@ if (typeof document !== "undefined") (function () {
     $("thead").innerHTML = ""; $("thead").appendChild(tr);
   }
 
-  function nameCell(it, extra) {
+  function nameCell(it, extra, href) {
     const td = el("td", "name"), wrap = el("div", "name-cell");
     if (it.i) { const img = el("img", "item-thumb"); img.src = it.i; img.alt = ""; img.loading = "lazy"; wrap.appendChild(img); }
     const box = el("div"), a = el("a", "", it.n);
-    a.href = buildLink(it); a.target = "_blank"; a.rel = "noopener";
+    a.href = href || buildLink(it); a.target = "_blank"; a.rel = "noopener";
     box.appendChild(a);
     // Fiche du skin (prix, ventes vues dans le flux) : page du serveur, un dossier au-dessus de static/.
     const f = el("a", "fiche", "fiche");
@@ -1105,8 +1124,17 @@ if (typeof document !== "undefined") (function () {
     const extra = PAT_FAMILY_LABEL[c.fam] + (patLocked(c, now) ? " · trade-protect " + ((c.lk - now) / 86400e3).toFixed(1) + " j"
       : c.tp ? " · tradable (protection finie)" : " · tradable")
       + (c.alerted ? " · 🔔 alerte" : "");
+    // Le nom ouvre toutes les offres de l'item (pour comparer) ; « seed N » ouvre seulement cet exemplaire (&pattern=).
+    const seedOk = c.fam !== "charm" && c.seed !== null && c.seed !== undefined;
     tr.appendChild(nameCell(it, extra));
-    tr.appendChild(cell("num", fmtPatX(c.fam, c.x), c.fam !== "charm" && c.seed !== null && c.seed !== undefined ? "seed " + c.seed : ""));
+    const xtd = cell("num", fmtPatX(c.fam, c.x));
+    if (seedOk) {
+      const sa = el("a", "sub", "seed " + c.seed);
+      sa.href = buildLink(it) + "&pattern=" + c.seed; sa.target = "_blank"; sa.rel = "noopener";
+      sa.title = "Seulement les offres de ce seed sur Skinport";
+      xtd.appendChild(sa);
+    }
+    tr.appendChild(xtd);
     tr.appendChild(cell("num", eur(c.p), "normal ≈ " + eur(c.base)));
     tr.appendChild(cell("num", "≥ " + eur(c.V), "net " + eur(net(c.V)), "Plus basse des ventes comparables, ramenée au prix suggéré actuel (autre usure : moitié)"));
     const g = cell("num", signed(c.g), "+" + c.pct + " %"); g.classList.add("pos"); tr.appendChild(g);

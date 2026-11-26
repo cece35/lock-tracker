@@ -972,9 +972,10 @@ public class SkinGap {
             String name = itemKey((String) item.get("market_hash_name"), item.get("version"));
             if (item.get("version") != null) versionByKey.put(name, String.valueOf(item.get("version")));
             Object mp0 = item.get("market_page");
-            // La market_page des variantes contient déjà le filtre de phase (&phase=N) : on la
-            // préfère à celle de l'historique, au cas où celui-ci n'aurait pas l'entrée.
-            if (mp0 != null) marketPageByName.putIfAbsent(name, (String) mp0);
+            // La market_page de /v1/items remplace celle de l'historique des ventes : elle porte le filtre de
+            // phase des variantes (&phase=N, absent de l'historique : les 332 phases Doppler menaient à toutes
+            // les phases) et le format actuel des pages (/market/rifle/ak-47?item=Redline).
+            if (mp0 != null) marketPageByName.put(name, (String) mp0);
             Object min = item.get("min_price");
             if (min == null) continue;
             globalStats.put(name, new MarketStats(
@@ -1462,8 +1463,9 @@ public class SkinGap {
   <details class="notice">
     <summary>Comment lire cette page (modes de prix, revente, écart…)</summary>
     <b>Lien Skinport :</b> chaque lien pointe vers la page marché de l'item, trié par prix croissant
-    (<code>sort=price&order=asc</code>) et filtré sur le trade-protect ≤ 8 jours (<code>lock=8</code>), avec
-    l'usure (<code>exterior=</code>) et StatTrak™/Souvenir détectés automatiquement depuis le nom.<br>
+    (<code>sort=price&order=asc</code>) et filtré sur le trade-protect ≤ 8 jours (<code>lock=8</code>), avec la phase des Doppler.
+    Skins d'armes, couteaux et gants : usure (<code>exterior=</code>), StatTrak™/Souvenir, sans stickers/charms/nametag,
+    couteau vanilla ou non. Stickers, caisses, charms, agents… : aucun de ces filtres.<br>
     <b>Prix de vente espéré :</b> calculé selon le mode choisi dans "Mode prix" (l'extension doit lire le
     champ <code>xf</code> de skins.json pour avoir le même "Très rapide") —
     <b>Très rapide</b> (par défaut) : part des <i>dernières ventes</i> (prix typique pondéré par récence et
@@ -1680,25 +1682,32 @@ const EXTERIOR_CODE = {
   "battle scarred": 1
 };
 
-function buildLink(it) {
-  let url = it.p + (it.p.includes("?") ? "&" : "?") + "sort=price&order=asc&lock=8";
-  const name = it.n;
-  const nameLower = name.toLowerCase();
-  for (const [label, code] of Object.entries(EXTERIOR_CODE)) {
-    if (nameLower.includes(label)) { url += "&exterior=" + code; break; }
+// Lien Skinport d'un item : sa page marché triée par prix croissant. lock = jours de trade-protect admis
+// (0 : seulement les annonces instantanées). p = market_page de l'API /v1/items, qui porte la phase des
+// Doppler (&phase=N). Les filtres dépendent du type d'item (vérifié le 26/11/2026) :
+//  - usure, StatTrak™, Souvenir, stickers/charms/nametag : seulement les skins d'armes, couteaux et gants
+//    (sur un sticker, une caisse, un charm, un agent… ils n'ont pas de sens) ;
+//  - couteaux : vanilla=1 pour le couteau sans skin (« ★ Karambit »), vanilla=0 sinon ;
+//  - music kits : StatTrak™ explicite (les deux versions sont sur la même page).
+function skinportLink(p, n, lock) {
+  const l = n.toLowerCase();
+  let url = p || "https://skinport.com/market?search=" + encodeURIComponent(n);
+  url += (url.includes("?") ? "&" : "?") + "sort=price&order=asc&lock=" + (lock === undefined ? 8 : lock);
+  let wear = null;
+  for (const [label, code] of Object.entries(EXTERIOR_CODE)) if (l.includes("(" + label + ")")) { wear = code; break; }
+  const knife = n.startsWith("★") && !l.includes("gloves") && !l.includes("wraps");
+  const vanilla = knife && !n.includes("|");
+  if (wear !== null || vanilla) {
+    if (wear !== null) url += "&exterior=" + wear;
+    url += "&stattrak=" + (l.includes("stattrak") ? 1 : 0) + "&souvenir=" + (l.startsWith("souvenir ") ? 1 : 0);
+    url += "&stickers=0&charms=0&nametag=0";
+    if (knife) url += "&vanilla=" + (vanilla ? 1 : 0);
+  } else if (l.includes("music kit")) {
+    url += "&stattrak=" + (l.includes("stattrak") ? 1 : 0);
   }
-  // Toujours explicite (0 ou 1), jamais omis : certaines armes sont moins chères en
-  // StatTrak™ que sans, et Skinport inclut ces annonces par défaut si le paramètre
-  // est absent, ce qui fausse le tri par prix.
-  // Attention : le paramètre Skinport est "stattrak" (sans le c de "stattrack",
-  // erreur qui faisait que ce filtre n'avait jamais aucun effet).
-  url += "&stattrak=" + (nameLower.includes("stattrak") ? 1 : 0);
-  url += "&souvenir=" + (nameLower.startsWith("souvenir") ? 1 : 0);
-  // Toujours explicites à 0 aussi : sans quoi Skinport peut inclure des annonces avec
-  // stickers/charms/nametag ou des skins vanilla dans le tri par prix.
-  url += "&stickers=0&charms=0&nametag=0&vanilla=0";
   return url;
 }
+function buildLink(it) { return skinportLink(it.p, it.n, 8); }
 
 // Prix de vente espéré BRUT :
 // - "veryfast" : prix "xf" calculé par FastSellModel (SkinGap.java) — le plus haut prix qui donne ~80 %
