@@ -216,16 +216,19 @@ test("fracBelow, horloge, Poisson", () => {
 
 test("trade-protect : marge z·σ·√(d+2), offres au-delà du seuil de jours exclues", () => {
   const it = item({ xf: 10, h24: 10, h7: 10, h30: 10, h90: 10, xp: 0.8, ask: 10.5, min: 8.5, xs: 10, xl: 5 });
-  const b = { tp: [[850, 5, 0.2], [880, 1, 0.3], [800, 9, 0.1]] };
+  const b = { tp: [[750, 5, 0.2], [880, 1, 0.3], [800, 9, 0.1]] };
   const t = A.tpOffers(it, b, { z: 1, maxDays: 8, minEur: 0.3, minPct: 4, sell: "after", ageDays: 0 });
   assert.strictEqual(t.offers.length, 2, "l'offre à 9 jours est exclue");
-  near(t.sigma.s, 0.015, 1e-12, "σ borné à 1,5 %/j");
+  near(t.sigma.s, 0.05, 1e-12, "σ au plancher de 5 %/j");
   const b0 = t.best;
-  near(b0.p, 8.5); near(b0.gapExp, 9.2 - 8.5, 1e-9);
-  near(b0.marginPct, 1 - Math.exp(-0.015 * Math.sqrt(7)), 1e-12);
-  near(b0.gap, 0.7 - 9.2 * (1 - Math.exp(-0.015 * Math.sqrt(7))), 1e-9);
-  assert.strictEqual(A.tpOffers(it, b, { z: 1, maxDays: 8, minEur: 0.5, minPct: 5, sell: "after", ageDays: 0 }), null,
+  near(b0.p, 7.5); near(b0.gapExp, 9.2 - 7.5, 1e-9);
+  near(b0.marginPct, 1 - Math.exp(-0.05 * Math.sqrt(7)), 1e-12);
+  near(b0.gap, 1.7 - 9.2 * (1 - Math.exp(-0.05 * Math.sqrt(7))), 1e-9);
+  assert.ok(t.offers.find(o => o.p === 8.8).gap < 0, "à 8,80 € (1 jour) : l'écart attendu ne couvre pas la marge");
+  assert.strictEqual(A.tpOffers(it, b, { z: 1, maxDays: 8, minEur: 0.6, minPct: 5, sell: "after", ageDays: 0 }), null,
     "écart affiché sous la marge minimale");
+  // ancien plancher (1,5 %/j) : l'offre à 8,50 € passait, plus avec 5 %/j (marge 1,14 € pour 0,70 € d'écart attendu)
+  assert.strictEqual(A.tpOffers(it, { tp: [[850, 5, 0.2]] }, { z: 1, maxDays: 8, minEur: 0.3, minPct: 4, sell: "after", ageDays: 0 }), null);
   const z0 = A.tpOffers(it, b, { z: 0, maxDays: 8, minEur: 0.3, minPct: 4, sell: "after", ageDays: 0 });
   near(z0.best.margin, 0, 1e-12, "z = 0 : pas de marge");
   assert.strictEqual(A.tpOffers(it, b, { z: 1, maxDays: 8, minProb: 0.9, minEur: 0.3, minPct: 4, sell: "after", ageDays: 0 }), null,
@@ -233,11 +236,14 @@ test("trade-protect : marge z·σ·√(d+2), offres au-delà du seuil de jours e
   assert.ok(A.tpOffers(it, b, { z: 1, maxDays: 8, minProb: 0.5, minEur: 0.3, minPct: 4, sell: "after", ageDays: 0 }), "80 % >= 50 %");
 });
 
-test("volatilité provisoire tirée des prix typiques 24 h / 7 j / 30 j / 90 j", () => {
-  const s = A.sigmaOf({ h24: 10, h7: 10.5, h30: 11, h90: 12 }).s;
+test("volatilité tirée des prix typiques 24 h / 7 j / 30 j / 90 j, au moins 5 %/j", () => {
+  const s = A.sigmaOf({ h24: 10, h7: 12, h30: 13, h90: 18 }).s;
   const r = (a, b, dt) => Math.pow(Math.log(a / b), 2) / dt;
-  near(s, Math.sqrt((r(10, 10.5, 3) + r(10.5, 11, 11.5) + r(11, 12, 30)) / 3), 1e-12);
-  near(A.sigmaOf({ h24: 10 }).s, 0.03, 1e-12, "par défaut");
+  near(s, Math.sqrt((r(10, 12, 3) + r(12, 13, 11.5) + r(13, 18, 30)) / 3), 1e-12);
+  assert.ok(s > 0.05 && s < 0.10, "entre les bornes : estimation gardée");
+  near(A.sigmaOf({ h24: 10, h7: 10.5, h30: 11, h90: 12 }).s, 0.05, 1e-12, "prix calmes (≈ 2 %/j) : plancher de 5 %/j (mesuré du 20 au 27/11)");
+  near(A.sigmaOf({ h24: 10 }).s, 0.06, 1e-12, "par défaut");
+  assert.ok(A.SIGMA_DEFAULT >= A.SIGMA_MIN, "défaut au-dessus du plancher");
 });
 
 test("bandeau : flux coupé, silencieux ou carnet en retard", () => {
@@ -331,9 +337,43 @@ test("lot et trade-protect : heure de chaque annonce, la plus récente du lot", 
   assert.strictEqual(lu.units[0].unknown, true);
   assert.deepStrictEqual(lu.units[0].when, [S, S, false], "annonce inconnue : heure estimée transmise");
   const it = item({ xf: 10, h24: 10, h7: 10, h30: 10, h90: 10, xp: 0.8, ask: 10.5, min: 8.5, xs: 10, xl: 5 });
-  const tp = A.tpOffers(it, { tp: [[850, 5, 0.2, T, T - 86400e3, 900]] }, { z: 1, maxDays: 8, minEur: 0.3, minPct: 4, sell: "after", ageDays: 0 });
+  const tp = A.tpOffers(it, { tp: [[750, 5, 0.2, T, T - 86400e3, 900]] }, { z: 1, maxDays: 8, minEur: 0.3, minPct: 4, sell: "after", ageDays: 0 });
   assert.deepStrictEqual([tp.best.t, tp.best.t1, tp.best.pp], [T, T - 86400e3, 900]);
   assert.strictEqual(A.listedInfo(tp.best, T + 60e3).sub, "prix changé, était 9.00 €");
+});
+
+test("prix pas revu depuis 24 h : annonce, lot (niveaux du carnet), mur, trade-protect", () => {
+  const T = new Date(2026, 10, 25, 9, 0).getTime(), H = 3600e3;
+  const u = { p: 5, t: T, t1: T, pp: null };
+  assert.strictEqual(A.listedInfo(u, T + 23 * H).stale, false, "vue il y a 23 h : rien");
+  const v = A.listedInfo(u, T + 25 * H);
+  assert.strictEqual(v.stale, true, "vue il y a 25 h : prix peut-être baissé");
+  assert.ok(v.title.includes("plus de 24 h") && v.sub.startsWith("il y a"), "sous-texte inchangé, explication dans le titre");
+  assert.strictEqual(A.listedInfo({ p: 5, t: T, t1: T - 48 * H, pp: 600 }, T + 25 * H).sub, "prix changé, était 6.00 €");
+  assert.ok(!A.listedInfo({ unknown: true, when: [T, T, false] }, T + 48 * H).stale, "annonce au min de l'API (photo) : pas concernée");
+  // niveaux : 5e champ de levels_t (book.py), absent d'un ancien book.json
+  const lv5 = [[13, 65, 10, T, 40], [20, 21, 3000, T, 21]];
+  assert.deepStrictEqual(A.levelsOf(recoilBook({ levels_t: lv5 })).map(l => l.old), [40, 21]);
+  assert.ok(A.levelsOf(recoilBook()).every(l => l.old === null), "ancien format : inconnu");
+  const sales = { sales_t_7d: 214, sales_t_lv: [[13, 65], [19, 119], [20, 30]] };
+  const lot = A.bestLot(recoil(), recoilBook(Object.assign({ levels_t: lv5 }, sales)), ctx({ hc: 96, horizonH: 168 }));
+  assert.strictEqual(lot.wallKind, "connue");
+  assert.strictEqual(lot.wallLv.old, 21, "mur : les 21 annonces à 0,20 € pas revues depuis 24 h");
+  assert.strictEqual(A.lotOld(lot, T), 40, "lot : 40 des 65 caisses, d'après le niveau (au-delà des 40 exportées une à une)");
+  const lot0 = A.bestLot(recoil(), recoilBook(sales), ctx({ hc: 96, horizonH: 168 }));
+  assert.strictEqual(lot0.wallLv.old, null, "ancien book.json : rien sur le mur");
+  assert.strictEqual(A.lotOld(lot0, T), 0);
+  // ancien format de niveaux : compté d'après les heures des annonces exportées une à une
+  const b = example();
+  b.tradable = b.tradable.map((x, i) => x.concat([T - (i < 2 ? 30 : 1) * H, T - 40 * H, null]));
+  assert.strictEqual(A.lotOld(A.bestLot(item(), b, ctx()), T), 2, "2 des 7 annonces vues il y a 30 h");
+  // mur inconnu (plancher de l'API) : pas de niveau
+  const lu = A.bestLot(recoil(), recoilBook(Object.assign({ known_t: 65, levels_t: [[13, 65, 10, T, 0]] }, sales)), ctx({ hc: 96, horizonH: 168 }));
+  assert.strictEqual([lu.wallKind, lu.wallLv].join(), "inconnues,");
+  // offre trade-protect vue il y a 2 jours
+  const it = item({ xf: 10, h24: 10, h7: 10, h30: 10, h90: 10, xp: 0.8, ask: 10.5, min: 8.5, xs: 10, xl: 5 });
+  const tp = A.tpOffers(it, { tp: [[750, 5, 0.2, T - 48 * H, T - 48 * H, null]] }, { z: 1, maxDays: 8, minEur: 0.3, minPct: 4, sell: "after", ageDays: 0 });
+  assert.strictEqual(A.listedInfo(tp.best, T).stale, true);
 });
 
 test("sous-textes : espaces insécables là où la ligne ne doit pas couper", () => {

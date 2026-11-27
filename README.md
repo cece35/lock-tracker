@@ -961,13 +961,14 @@ Une annonce intéressante part en général en moins de 24 h. La colonne **Mise 
   - « ≈ 11:40 » : le min est descendu à ce prix sur la photo de 11:40 (nouvelle annonce, ou prix baissé peu avant).
   - « ≤ 11:40, après 09:10 » : une annonce moins chère la cachait ; elle est apparue entre les deux.
   - « peut-être bien avant » : le min était déjà à ce prix ou moins au début de l'historique.
-- Dans `book.json`, les annonces `tradable` et `tp` sont `[prix, âge, usure, mise en vente, 1re apparition, prix d'avant]`, les niveaux `levels_t` ont l'heure de la dernière mise en vente, et `api_floor_t_when` = `[S, R, plus ancienne]`.
+- **« ⚠ prix peut-être baissé »** (27/11/2026) : prix vu il y a plus de 24 h. Le flux ne signale pas les baisses de prix : mesuré du 19 au 27/11 sur les annonces vues puis vendues, ~45 % de celles vendues après 1 à 3 jours en vente l'ont été à un autre prix que celui vu (64 à 70 % après 3 jours), presque toujours plus bas (−5 à −13 % en médiane). Affiché sur les annonces d'un lot, les offres trade-protect et les patterns rares encore en vente ; **« ⚠ mur pas revu depuis 24 h »** sous la revente visée quand l'annonce suivante est dans ce cas (la revente visée serait alors trop haute). Le 27/11, 89 % des annonces tradables connues avaient plus de 24 h, et 9 des 11 lots (inconnues ignorées) avaient un mur dans ce cas.
+- Dans `book.json`, les annonces `tradable` et `tp` sont `[prix, âge, usure, mise en vente, 1re apparition, prix d'avant]`, les niveaux `levels_t` `[prix, nombre, âge, dernière mise en vente, nombre au prix pas revu depuis 24 h]`, et `api_floor_t_when` = `[S, R, plus ancienne]`.
 
 ## Offres trade-protect
 
 Les jours restants de chaque offre sont exacts, lus dans le carnet.
 - **Écart affiché** = écart attendu − z·σ·√(jours restants + 2).
-- **σ** (volatilité journalière) est pour l'instant provisoire : tirée des prix typiques des ventes 24 h / 7 j / 30 j / 90 j, avec un plancher de 1,5 %/jour. Les photos horaires prendront le relais quand on aura une semaine de données.
+- **σ** (volatilité journalière) : tirée des prix typiques des ventes 24 h / 7 j / 30 j / 90 j, avec un plancher de **5 %/jour** (6 % sans estimation) depuis le 27/11/2026. Mesuré sur les photos horaires du 20 au 27/11 (min tradable à midi des skins à ≥ 10 annonces, ≥ 1 €, ≥ 10 ventes en 7 j) : avec z = 1, le prix doit passer sous la marge ~16 % du temps. Avec l'ancien plancher de 1,5 %/jour, il y passait 28 à 48 % du temps (2 à 6 jours d'exposition) ; avec 5 %/jour, 14 à 16 %. La plupart des skins sont donc au plancher. Sur les données du 27/11, l'onglet était déjà vide à z = 1 ; à z = 0,5 il passe de 10 offres à 1.
 - **Filtre** : seuls les items revendables sous 48 h avec au moins 50 % de chances (`xp`) sont affichés.
 
 ## Patterns rares (25/11/2026)
