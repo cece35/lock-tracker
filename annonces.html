@@ -14,7 +14,8 @@
   et des offres trade-protect.
   Colonne « Mise en vente » : heure de la dernière mise en vente (ou remise en vente) des annonces vues dans le flux
   (book.json : tradable/tp [prix, âge, usure, mise_en_vente, 1re_apparition, prix_d_avant]), estimée d'après les
-  photos de l'API pour l'annonce inconnue au min (api_floor_t_when, voir floor_when dans book.py).
+  photos de l'API pour l'annonce inconnue au min (api_floor_t_when, voir floor_when dans book.py). « ⚠ prix peut-être
+  baissé » : mise en vente vue il y a plus de 24 h (STALE_MS) ; levels_t[4] = nombre d'annonces du niveau dans ce cas.
   Bouton « vérifier » (à côté de « fiche ») : POST ../api/verifier (TradeLockServer, transmis au service
   skinport-recheck du VM, voir verify dans ~/skinport-watch/recheck.py) avec les annonces de la ligne (verifRequest) ;
   réponse = état de chaque annonce d'après le flux du téléphone et la photo de l'API, résumé par verifText.
@@ -312,7 +313,12 @@
     (nouvelle annonce, ou prix baissé, peu avant) ; « ≤ 11:40 » avec « après 09:10 » : une annonce moins chère la
     cachait, elle est apparue entre les deux ; « peut-être bien avant » : elle était déjà là au début de l'historique
     des photos. Pour un lot de plusieurs annonces : la plus récente, et la plus ancienne en dessous. Tri « Plus
-    récentes » : les annonces les plus fraîches d'abord.<br><br>
+    récentes » : les annonces les plus fraîches d'abord. <span class="warn">⚠ prix peut-être baissé</span> : prix vu
+    il y a plus de 24 h. Le flux ne signale pas les baisses de prix : mesuré du 19 au 27/11, ~45 % des annonces
+    vendues après 1 à 3 jours en vente l'ont été à un autre prix que celui vu (64 à 70 % après 3 jours), presque
+    toujours plus bas (−5 à −13 % en médiane). Une telle annonce est peut-être moins chère, ou déjà retirée.
+    <span class="warn">⚠ mur pas revu depuis 24 h</span> sous la revente visée : l'annonce suivante est dans ce cas,
+    son prix a pu baisser et la revente visée (1 centime en dessous) serait alors trop haute.<br><br>
     <b>Vente estimée :</b> nos exemplaires sont mis en vente au même prix et partent l'un après l'autre (rang dans la
     file). <b>Caisses, capsules et stickers</b> (exemplaires identiques : l'acheteur prend le moins cher, souvent par
     lots) : vitesse = la moitié des ventes tradables vues dans le flux sur 7 jours à notre prix ou plus, par jour
@@ -327,8 +333,10 @@
     <b>Offres trade-protect :</b> achetables tout de suite, livrées à la fin de leur protection (jours restants exacts,
     lus dans le carnet). Revente visée = prix « Très rapide » une fois l'item tradable (concurrent : le Min tradable).
     <b>Écart affiché</b> = écart attendu − marge de sécurité, marge = z × σ × √(jours restants + 2) (le prix peut bouger
-    pendant la protection, plus ~2 jours pour revendre). σ = volatilité journalière du skin, provisoirement estimée à
-    partir des prix typiques des ventes sur 24 h / 7 j / 30 j / 90 j (en attendant une semaine de photos horaires).
+    pendant la protection, plus ~2 jours pour revendre). σ = volatilité journalière du skin, estimée à partir des prix
+    typiques des ventes sur 24 h / 7 j / 30 j / 90 j, au moins 5 %/jour : mesuré sur la semaine du 20 au 27/11, avec
+    z = 1 le min tradable est passé sous la marge 14 à 16 % du temps (16 % visé), contre 28 à 48 % avec l'ancien
+    plancher de 1,5 %/jour.
     Seuls les items qui ont assez de chances de partir sous 48 h une fois tradables sont affichés (« Proba 48 h », 50 %
     par défaut) : la marge suppose une revente rapide. En option, la revente tout de suite sous trade-protect (moins
     chère, ~7 à 12 % sous le Min tradable).<br><br>
@@ -381,8 +389,20 @@ const FS = { H: 2.0, TARGET: 0.80, LEXP: 0.80,
   SKINS: { aMax: 0.40, rLo: 0.94, b: 3.25 }, STACK: { aMax: 0.21, rLo: 0.85, b: 1.5 } };
 const TP = { D0: 0.964, SLOPE: 0.006, KAPPA: 0.60 };
 const PRIOR_H = 72;          // poids du λ de l'API, en heures de flux équivalentes
-const SIGMA_DEFAULT = 0.03;  // volatilité journalière par défaut (3 %/jour) quand on ne peut pas l'estimer
-const SIGMA_MIN = 0.015;     // plancher : les prix typiques sont lissés, l'estimation provisoire sous-estime σ
+const SIGMA_DEFAULT = 0.06;  // volatilité journalière par défaut (6 %/jour) quand on ne peut pas l'estimer
+// Plancher de σ : les prix typiques sont lissés, l'estimation sous-estime σ. Mesuré du 20 au 27/11 sur les photos
+// horaires de l'API (min tradable à midi des skins à ≥ 10 annonces, ≥ 1 €, ≥ 10 ventes en 7 j) : avec z = 1, le prix
+// devrait passer sous la marge ~16 % du temps ; avec un plancher de 1,5 %/j il y passait 28 à 48 % du temps (2 à 6
+// jours d'exposition), avec 5 %/j 14 à 16 %. La plupart des skins sont alors au plancher.
+const SIGMA_MIN = 0.05;
+// Prix pas revu depuis plus de 24 h (dernière mise en vente vue dans le flux) : le flux ne signale pas les baisses de
+// prix. Mesuré du 19 au 27/11 sur les annonces vues puis vendues : après 1 à 3 jours en vente, ~45 % sont parties à un
+// autre prix que celui vu (après 3 jours : 64 à 70 %), presque toujours plus bas (−5 à −13 % en médiane). Le carnet
+// (book.py) compte aussi ces annonces par niveau de prix (5e champ de levels_t), avec le même seuil.
+const STALE_MS = 24 * 3600e3;
+const STALE_TITLE = "Prix vu il y a plus de 24 h : le vendeur a pu le baisser, le flux ne signale pas les baisses de prix. "
+  + "Mesuré du 19 au 27/11 : ~45 % des annonces vendues après 1 à 3 jours en vente l'ont été à un autre prix que celui vu "
+  + "(64 à 70 % après 3 jours), presque toujours plus bas (−5 à −13 % en médiane).";
 
 function catOf(it) {
   try { return new URLSearchParams((it.p || "").split("?")[1] || "").get("cat") || "Autre"; }
@@ -483,12 +503,13 @@ function probAtLeast(k, M) {
 }
 
 // Niveaux de prix tradables connus, du moins cher au plus cher : [{ p, n, age, unknown }]. book.json récent :
-// « levels_t » = [prix_c, nombre, âge de la plus ancienne] (un lot de 65 caisses au même prix tenait avant les 40
+// « levels_t » = [prix_c, nombre, âge de la plus ancienne, dernière mise en vente (ms), nombre au prix pas revu depuis
+// 24 h (STALE_MS ; absent d'un ancien book.json)] (un lot de 65 caisses au même prix tenait avant les 40
 // places de « tradable » et cachait le prix suivant) ; ancien format : « tradable » regroupé par prix. L'annonce
 // inconnue au min de l'API (« api_floor_t ») est un niveau d'un exemplaire.
 function levelsOf(b) {
   let L;
-  if (b.levels_t) L = b.levels_t.map(x => ({ p: x[0] / 100, n: x[1], age: x[2], t: x[3] || null, unknown: false }));
+  if (b.levels_t) L = b.levels_t.map(x => ({ p: x[0] / 100, n: x[1], age: x[2], t: x[3] || null, old: x[4] ?? null, unknown: false }));
   else {
     const m = new Map();
     for (const x of b.tradable || []) {
@@ -583,6 +604,7 @@ function bestLot(it, b, ctx) {
     else if (truncated) break;
     else { wall = Infinity; wallKind = complete ? "aucune" : "inconnue"; }
     if (uf !== null && uf > lv.p + 1e-9 && uf < wall - 1e-9) { wall = uf; wallKind = "inconnues"; }
+    const wallLv = wallKind === "connue" ? L[j + 1] : null;     // niveau du mur (prix pas revus : wallLv.old)
     const Rmax = floorCents(Math.min(wall - 0.01, cap.c)), Rmin = minResale(lv.p, unit);
     if (Rmin > Rmax + 1e-9) continue;
     const at = R => {
@@ -604,7 +626,7 @@ function bestLot(it, b, ctx) {
       best = { k, j, R: s.R, netR, cost, gain, rho: s.rho, nu: s.nu, r: s.r, U: s.U, Tk: s.T, emp: s.emp,
         T1: hoursFor(s.U + 1, s.r, ctx.clock),
         pAll: probAtLeast(Math.round(s.U) + k, salesWithin(ctx.horizonH, s.r, ctx.clock)),
-        wall, wallKind, lowered, capped: !lowered && cap.c <= wall - 0.01 + 1e-9, capSrc: cap.src, cap: cap.c, lam, m };
+        wall, wallKind, wallLv, lowered, capped: !lowered && cap.c <= wall - 0.01 + 1e-9, capSrc: cap.src, cap: cap.c, lam, m };
     }
   }
   if (!best || best.gain < (ctx.minEur || 0) - 1e-9) return null;
@@ -631,7 +653,7 @@ function bestLot(it, b, ctx) {
 }
 
 // Volatilité journalière provisoire : écarts entre les prix typiques des ventes sur 24 h / 7 j / 30 j / 90 j
-// (âges moyens 0,5 / 3,5 / 15 / 45 jours), bornée entre 1,5 % et 10 % par jour.
+// (âges moyens 0,5 / 3,5 / 15 / 45 jours), bornée entre 5 % (SIGMA_MIN) et 10 % par jour.
 function sigmaOf(it) {
   const pts = [[0.5, it.h24], [3.5, it.h7], [15, it.h30], [45, it.h90]].filter(x => x[1] > 0);
   if (pts.length < 2) return { s: SIGMA_DEFAULT, src: "par défaut (pas assez de ventes)" };
@@ -740,13 +762,23 @@ function listedInfo(u, nowMs) {
         : "Une annonce moins chère la cachait : elle est apparue entre " + fmtWhen(R, nowMs) + " et " + fmtWhen(S, nowMs) + ".") };
   }
   if (!u.t) return { main: "—", sub: "", title: "", t: null };
-  const rel = "il y a " + durTxt(nowMs - u.t);
+  const rel = "il y a " + durTxt(nowMs - u.t), stale = nowMs - u.t > STALE_MS;   // stale : prix pas revu depuis 24 h
+  let r;
   if (u.t1 && u.t1 < u.t - 60e3) {
     const changed = u.pp !== null && u.pp !== undefined && u.pp !== Math.round(u.p * 100);
-    return { main: fmtWhen(u.t, nowMs), sub: changed ? "prix changé, était " + (u.pp / 100).toFixed(2) + " €" : "remise en vente", t: u.t,
+    r = { main: fmtWhen(u.t, nowMs), sub: changed ? "prix changé, était " + (u.pp / 100).toFixed(2) + " €" : "remise en vente", t: u.t,
       title: rel + " · 1re mise en vente vue " + fmtWhen(u.t1, nowMs) };
-  }
-  return { main: fmtWhen(u.t, nowMs), sub: rel, title: "Mise en vente vue dans le flux", t: u.t };
+  } else r = { main: fmtWhen(u.t, nowMs), sub: rel, title: "Mise en vente vue dans le flux", t: u.t };
+  r.stale = stale;
+  if (stale) r.title += "\n" + STALE_TITLE;
+  return r;
+}
+// Annonces d'un lot dont le prix n'a pas été revu depuis 24 h : d'après les niveaux du carnet (toutes, même au-delà
+// des 40 annonces exportées une à une), sinon (ancien book.json) d'après les annonces exportées.
+function lotOld(lot, nowMs) {
+  if (lot.levels.every(l => l.unknown || (l.old !== null && l.old !== undefined)))
+    return lot.levels.reduce((a, l) => a + (l.unknown ? 0 : l.old), 0);
+  return lot.units.filter(u => !u.unknown && u.t && nowMs - u.t > STALE_MS).length;
 }
 // Colonne « Mise en vente » d'un lot : l'annonce s'il n'y en a qu'une, sinon la plus récente (et la plus ancienne).
 function lotListedInfo(lot, nowMs) {
@@ -847,6 +879,7 @@ if (typeof module !== "undefined") {
   module.exports = { taxRate, net, floorCents, FS, TP, catOf, famOf, accept, lambdaOf, medianOf, capOf, rhoOf,
     fracBelow, nuOf, buildClock, hoursFor, salesWithin, probAtLeast, levelsOf, ufloorOf, fungibleRate, unknownBelow, minResale, bestLot, sigmaOf, tpFactor, tpNowPrice,
     tpOffers, feedProblem, itemType, patternFamily, isPatternItem, fmtPatX, durTxt, patLocked, patLockOk, patStatusOf, fmtWhen, listedInfo, lotListedInfo,
+    lotOld, SIGMA_MIN, SIGMA_DEFAULT, STALE_MS,
     nbsp, verifRequest, verifText, verifUnitTxt, hmsTxt };
 }
 
@@ -928,6 +961,17 @@ if (typeof document !== "undefined") (function () {
     if (sub) td.appendChild(el("span", "sub", nbsp(sub)));
     if (title) td.title = title;
     return td;
+  }
+  // « ⚠ prix peut-être baissé » sous une cellule : prix pas revu depuis 24 h (STALE_MS).
+  function staleMark(td, txt, title) {
+    const w = el("span", "sub warn", nbsp(txt));
+    w.title = title || STALE_TITLE;
+    td.appendChild(w);
+    return td;
+  }
+  function whenCell(li) {
+    const td = cell("num", li.main, li.sub, li.title);
+    return li.stale ? staleMark(td, "⚠ prix peut-être baissé") : td;
   }
 
   // Vérifications (bouton « vérifier ») : onglet|ligne -> { sig : annonces demandées, busy, prev, res | err }. Gardées
@@ -1142,14 +1186,21 @@ if (typeof document !== "undefined") (function () {
     const lo = lot.units[0].p, hi = lot.units[lot.k - 1].p;
     tr.appendChild(cell("num", lot.k + (lot.k > 1 ? " annonces" : " annonce"),
       (hi > lo ? eur(lo) + " → " + eur(hi) : (lot.k > 1 ? "à " : "") + eur(lo)) + (lot.unknownIncluded ? " · dont min API" : "")));
-    const li = lotListedInfo(lot, Date.now());
-    tr.appendChild(cell("num", li.main, li.sub, li.title));
+    const li = lotListedInfo(lot, Date.now()), old = lotOld(lot, Date.now());
+    const ltd = cell("num", li.main, li.sub, li.title);
+    if (old) staleMark(ltd, lot.k === 1 ? "⚠ prix peut-être baissé" : "⚠ " + old + " sur " + lot.k + " pas revue" + (old > 1 ? "s" : "") + " depuis 24 h");
+    tr.appendChild(ltd);
     tr.appendChild(cell("num", eur(lot.cost)));
     const wallTxt = lot.lowered ? "baissée pour partir sous " + hz(S.horizon) : lot.capped ? "plafond : haut des ventes"
       : lot.wallKind === "connue" ? "1 ct sous " + eur(lot.wall) : lot.wallKind === "api" ? "1 ct sous le min API"
       : lot.wallKind === "inconnues" ? "1 ct sous le reste du marché (" + eur(lot.wall) + ")"
       : "aucune annonce connue au-dessus";
-    tr.appendChild(cell("num", eur(lot.R), "net " + eur(lot.netR) + " · " + wallTxt));
+    const rtd = cell("num", eur(lot.R), "net " + eur(lot.netR) + " · " + wallTxt);
+    const wOld = lot.wallLv && lot.wallLv.old ? lot.wallLv.old : 0;
+    if (wOld) staleMark(rtd, "⚠ mur pas revu depuis 24 h", "L'annonce suivante (" + eur(lot.wall) + (lot.wallLv.n > 1 ? ", " + wOld + " sur " + lot.wallLv.n : "")
+      + ") n'a pas été revue depuis plus de 24 h : son vendeur a pu baisser son prix sans que le flux le dise, la revente visée "
+      + "(1 ct en dessous) serait alors trop haute.\n" + STALE_TITLE);
+    tr.appendChild(rtd);
     tr.appendChild(cell("num", lot.k > 1 ? dur(lot.T1) + " – " + dur(lot.Tk) : dur(lot.Tk),
       "lot entier < " + hz(S.horizon) + " : " + Math.round(lot.pAll * 100) + " %"));
     const g = cell("num", signed(lot.gain), pct(lot.roi));
@@ -1183,7 +1234,8 @@ if (typeof document !== "undefined") (function () {
           + " ; ils s'achètent souvent par lots entiers, le délai réel varie beaucoup"
         : "à " + eur(lot.R) + " l'annonce en tête part ≈ " + lot.rho.toFixed(2) + " fois/j ; nouvelles annonces moins chères attendues ≈ "
         + lot.nu.toFixed(2) + "/j",
-      "coût " + eur(lot.cost) + " → revente nette " + eur(lot.netR * lot.k) + " = " + signed(lot.gain)
+      "coût " + eur(lot.cost) + " → revente nette " + eur(lot.netR * lot.k) + " = " + signed(lot.gain),
+      lot.wallLv && lot.wallLv.old ? "⚠ l'annonce suivante (" + eur(lot.wall) + ") n'a pas été revue depuis plus de 24 h : son prix a pu baisser, la revente visée serait alors trop haute" : ""
     ];
     info.textContent = parts.filter(Boolean).join(" · ");
     dtd.appendChild(info);
@@ -1207,7 +1259,9 @@ if (typeof document !== "undefined") (function () {
           ur.appendChild(el("td", "num " + (gone ? "neg" : "pos"), gone ? gone + " sur " + l.n + " partie" + (gone > 1 ? "s" : "") : "en vente"));
         }
         const li = l.unknown ? listedInfo(l, Date.now()) : { main: l.t ? fmtWhen(l.t, Date.now()) : "—", sub: "la plus ancienne il y a " + ageTxt(l.age) };
-        ur.appendChild(cell("num", li.main, li.sub, li.title));
+        const ltd = cell("num", li.main, li.sub, li.title);
+        if (!l.unknown && l.old) staleMark(ltd, "⚠ " + (l.old === l.n ? (l.n > 1 ? "toutes" : "") : l.old + " sur " + l.n) + " pas revue" + (l.old > 1 ? "s" : "") + " depuis 24 h");
+        ur.appendChild(ltd);
         ur.appendChild(el("td", "num " + (l.gain >= 0 ? "pos" : "neg"), signed(l.gain)));
         ur.appendChild(el("td", "num", "≈ " + dur(lot.units[rank - 1].T)));
         t.appendChild(ur);
@@ -1227,8 +1281,7 @@ if (typeof document !== "undefined") (function () {
       if (u.unknown) { pc.appendChild(el("span", "sub unk", "min API, pas vue")); }
       ur.appendChild(pc);
       if (vu) ur.appendChild(el("td", "num " + (vu[i].st === "listed" ? "pos" : "neg"), verifUnitTxt(vu[i], now)));
-      const li = listedInfo(u, Date.now());
-      ur.appendChild(cell("num", li.main, li.sub, li.title));
+      ur.appendChild(whenCell(listedInfo(u, Date.now())));
       ur.appendChild(el("td", "num", u.wear === null || u.wear === undefined ? "—" : u.wear.toFixed(4)));
       ur.appendChild(el("td", "num " + (u.gain >= 0 ? "pos" : "neg"), signed(u.gain)));
       ur.appendChild(el("td", "num", "≈ " + dur(u.T)));
@@ -1244,8 +1297,7 @@ if (typeof document !== "undefined") (function () {
     tr.appendChild(toggleCell(r.key));
     tr.appendChild(nameCell(it, catOf(it) + " · σ ≈ " + (t.sigma.s * 100).toFixed(1) + " %/j", null, verifFor(r)));
     tr.appendChild(cell("num", eur(o.p), o.wear === null || o.wear === undefined ? "" : "usure " + o.wear.toFixed(4)));
-    const li = listedInfo(o, Date.now());
-    tr.appendChild(cell("num", li.main, li.sub, li.title));
+    tr.appendChild(whenCell(listedInfo(o, Date.now())));
     tr.appendChild(cell("num", o.d.toFixed(1) + " j"));
     tr.appendChild(cell("num", eur(o.resale), "net " + eur(o.netR) + (S.tpSell === "now" ? " · tout de suite" : " · proba 48 h " + Math.round(t.prob * 100) + " %")));
     const ge = cell("num", signed(o.gapExp)); ge.classList.add(o.gapExp >= 0 ? "pos" : "neg"); tr.appendChild(ge);
@@ -1264,8 +1316,7 @@ if (typeof document !== "undefined") (function () {
     for (const x of t.offers) {
       const ur = el("tr");
       ur.appendChild(el("td", "", eur(x.p)));
-      const li = listedInfo(x, Date.now());
-      ur.appendChild(cell("num", li.main, li.sub, li.title));
+      ur.appendChild(whenCell(listedInfo(x, Date.now())));
       ur.appendChild(el("td", "num", x.d.toFixed(1) + " j"));
       ur.appendChild(el("td", "num", x.wear === null || x.wear === undefined ? "—" : x.wear.toFixed(4)));
       ur.appendChild(el("td", "num", eur(x.resale)));
@@ -1303,7 +1354,9 @@ if (typeof document !== "undefined") (function () {
     const g = cell("num", signed(c.g), "+" + c.pct + " %"); g.classList.add("pos"); tr.appendChild(g);
     tr.appendChild(cell("num", c.n_comps + (c.n_comps > 1 ? " ventes" : " vente"),
       c.comps.slice(0, 2).map(h => eur(h[1])).join(" · ")));
-    tr.appendChild(cell("num", hhmm(c.t), new Date(c.t).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })));
+    const vtd = cell("num", hhmm(c.t), new Date(c.t).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" }));
+    if (st.key === "listed" && now - c.t > STALE_MS) staleMark(vtd, "⚠ prix peut-être baissé");
+    tr.appendChild(vtd);
     const s = cell("", st.txt, st.sub, st.title);
     if (st.cls) s.classList.add(st.cls);
     tr.appendChild(s);
